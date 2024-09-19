@@ -1,37 +1,38 @@
-use lnrpc::Invoice;
-use lntypes::Hash;
+use tonic_openssl_lnd::lnrpc;
+use lightning::ln::{PaymentHash};
 use std::error::Error;
+use std::sync::{Arc, Mutex};
+
+use crate::lnurl;
+use crate::lnd;
 
 const LND_CLIENT_TYPE: &str = "LND";
 const LNURL_CLIENT_TYPE: &str = "LNURL";
 
-// Assuming LNDoptions and LNURLoptions are defined for configuration
-struct LNClientConfig {
-    ln_client_type: String,
-    lnd_config: LNDoptions,
-    lnurl_config: LNURLoptions,
-    root_key: Vec<u8>,
+#[derive(Debug, Clone)]
+pub struct LNClientConfig {
+    pub ln_client_type: String,
+    pub lnd_config: lnd::LNDOptions,
+    pub lnurl_config: lnurl::LNURLOptions,
+    pub root_key: Vec<u8>,
 }
 
-trait LNClient {
+pub trait LNClient: Send + Sync + 'static {
     fn add_invoice(
-        &self,
-        ctx: &Context, // Assuming a Rust Context type
-        ln_req: &Invoice,
-        http_req: &http::Request,
-        options: &[grpc::CallOption],
+        &mut self,
+        invoice: lnrpc::Invoice,
     ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error>>;
 }
 
-struct LNClientConn {
-    ln_client: Box<dyn LNClient>,
+pub struct LNClientConn {
+    ln_client: Arc<Mutex<dyn LNClient>>,
 }
 
 impl LNClientConn {
-    fn init(ln_client_config: &LNClientConfig) -> Result<Self, Box<dyn Error>> {
-        let ln_client = match ln_client_config.ln_client_type.as_str() {
-            LND_CLIENT_TYPE => NewLNDClient(&ln_client_config.lnd_config)?,
-            LNURL_CLIENT_TYPE => NewLNURLClient(&ln_client_config.lnurl_config)?,
+    pub fn init(ln_client_config: &LNClientConfig) -> Result<Arc<dyn LNClient>, Box<dyn Error>> {
+        let ln_client: Arc<dyn LNClient> = match ln_client_config.ln_client_type.as_str() {
+            LND_CLIENT_TYPE => lnd::LNDWrapper::new_client(ln_client_config)?,
+            LNURL_CLIENT_TYPE => lnurl::LnAddressUrlResJson::new_client(ln_client_config)?,
             _ => {
                 return Err(format!(
                     "LN Client type not recognized: {}",
@@ -41,21 +42,19 @@ impl LNClientConn {
             }
         };
 
-        Ok(Self {
-            ln_client: Box::new(ln_client),
-        })
+        Ok(ln_client)
     }
 
-    fn generate_invoice(
+    pub fn generate_invoice(
         &self,
-        ctx: &Context,
-        ln_invoice: Invoice,
-        http_req: &http::Request,
-    ) -> Result<(String, Hash), Box<dyn Error>> {
-        let ln_client_invoice = self.ln_client.add_invoice(ctx, &ln_invoice, http_req, &[])?;
+        ln_invoice: lnrpc::Invoice,
+    ) -> Result<(String, PaymentHash), Box<dyn Error>> {
+        let mut client = self.ln_client.lock().unwrap();
+        let ln_client_invoice = client.add_invoice(ln_invoice)?;
 
         let invoice = ln_client_invoice.payment_request;
-        let payment_hash = Hash::from_bytes(&ln_client_invoice.r_hash)?;
+        let hash: [u8; 32] = ln_client_invoice.r_hash.try_into().map_err(|_| "Invalid length for r_hash, must be 32 bytes")?;
+        let payment_hash = PaymentHash(hash);
 
         Ok((invoice, payment_hash))
     }

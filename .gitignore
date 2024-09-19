@@ -1,1 +1,5 @@
 /target
+
+# env, use .env_example for reference
+examples/.env
+.env

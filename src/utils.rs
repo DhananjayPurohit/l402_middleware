@@ -31,7 +31,7 @@ pub fn parse_lsat_header(auth_field: &str) -> Result<(Macaroon, PaymentPreimage)
     Ok((mac, preimage))
 }
 
-fn parse_ln_address(address: String) -> Result<(String, String), String> {
+pub fn parse_ln_address(address: String) -> Result<(String, String), String> {
   let address = address.trim();
   let address_split = address.split("@").collect::<Vec<&str>>();
 
