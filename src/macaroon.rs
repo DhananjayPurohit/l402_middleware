@@ -2,19 +2,20 @@ use macaroon::{Macaroon, MacaroonKey, ByteString, Format};
 use serde::{Deserialize, Serialize};
 use lightning::ln::{PaymentHash};
 use rocket::serde::json::from_slice;
-use crate::utils::get_root_key;
 use rand;
+use hex;
 
-fn get_macaroon_as_string(
-    payment_hash: &str,
-    caveats: &[String], // Assuming caveat.Caveat can be represented as a String
+pub fn get_macaroon_as_string(
+    payment_hash: PaymentHash,
+    caveats: &[String],
+    root_key: Vec<u8>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let key = MacaroonKey::generate(get_root_key().as_bytes());
+    let key = MacaroonKey::generate(&root_key);
 
     let mut mac = Macaroon::create(
         Some("LSAT".into()),
         &key,
-        ByteString::from(payment_hash),
+        ByteString::from(hex::encode(payment_hash.0)),
     )?;
 
     for caveat in caveats {

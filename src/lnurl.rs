@@ -6,7 +6,7 @@ use rocket::serde::json::serde_json;
 use lightning::ln::PaymentHash;
 use tonic_openssl_lnd::lnrpc;
 use lightning_invoice::{Bolt11Invoice, SignedRawBolt11Invoice};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use bitcoin::hashes::Hash;
 
 use crate::utils;
@@ -48,7 +48,7 @@ pub struct DecodedPR {
 }
 
 impl LnAddressUrlResJson {
-    pub fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<dyn lnclient::LNClient>, Box<dyn std::error::Error>> {
+    pub fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
         let lnurl_options = ln_client_config.lnurl_config.clone();
         let (username, domain) = utils::parse_ln_address(lnurl_options.address)?;
     
@@ -56,7 +56,7 @@ impl LnAddressUrlResJson {
         let ln_address_url_res_body = block_on(do_get_request(&ln_address_url));
     
         let ln_address_url_res: LnAddressUrlResJson = serde_json::from_str(&ln_address_url_res_body.unwrap())?;
-        Ok(Arc::new(ln_address_url_res))
+        Ok(Arc::new(Mutex::new(ln_address_url_res)))
     }
 }
 

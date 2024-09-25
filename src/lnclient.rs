@@ -25,12 +25,12 @@ pub trait LNClient: Send + Sync + 'static {
 }
 
 pub struct LNClientConn {
-    ln_client: Arc<Mutex<dyn LNClient>>,
+    pub ln_client: Arc<Mutex<dyn LNClient>>,
 }
 
 impl LNClientConn {
-    pub fn init(ln_client_config: &LNClientConfig) -> Result<Arc<dyn LNClient>, Box<dyn Error>> {
-        let ln_client: Arc<dyn LNClient> = match ln_client_config.ln_client_type.as_str() {
+    pub fn init(ln_client_config: &LNClientConfig) -> Result<Arc<Mutex<dyn LNClient>>, Box<dyn Error + Send + Sync>> {
+        let ln_client: Arc<Mutex<dyn LNClient>> = match ln_client_config.ln_client_type.as_str() {
             LND_CLIENT_TYPE => lnd::LNDWrapper::new_client(ln_client_config)?,
             LNURL_CLIENT_TYPE => lnurl::LnAddressUrlResJson::new_client(ln_client_config)?,
             _ => {
@@ -49,13 +49,13 @@ impl LNClientConn {
         &self,
         ln_invoice: lnrpc::Invoice,
     ) -> Result<(String, PaymentHash), Box<dyn Error>> {
-        let mut client = self.ln_client.lock().unwrap();
-        let ln_client_invoice = client.add_invoice(ln_invoice)?;
+        let mut client = &mut self.ln_client.lock().unwrap();
+        let ln_client_invoice = &mut client.add_invoice(ln_invoice)?;
 
-        let invoice = ln_client_invoice.payment_request;
-        let hash: [u8; 32] = ln_client_invoice.r_hash.try_into().map_err(|_| "Invalid length for r_hash, must be 32 bytes")?;
+        let invoice = &ln_client_invoice.payment_request;
+        let hash: [u8; 32] = ln_client_invoice.r_hash.clone().try_into().map_err(|_| "Invalid length for r_hash, must be 32 bytes")?;
         let payment_hash = PaymentHash(hash);
 
-        Ok((invoice, payment_hash))
+        Ok((invoice.to_string(), payment_hash))
     }
 }

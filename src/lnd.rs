@@ -1,4 +1,4 @@
-use std::{fs, error::Error, sync::Arc};
+use std::{fs, error::Error, sync::Arc, sync::Mutex};
 use futures::executor::block_on;
 use macaroon::Macaroon;
 use tonic_openssl_lnd::{LndClient};
@@ -24,7 +24,7 @@ pub struct LNDWrapper {
 impl LNDWrapper {
     pub fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
-    ) -> Result<Arc<dyn lnclient::LNClient>, Box<dyn Error>> {
+    ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
         let lnd_options = ln_client_config.lnd_config.clone();
         // Parse the port from the LNDOptions address, assuming the format is "host:port"
         let address = lnd_options.address.clone();
@@ -61,9 +61,9 @@ impl LNDWrapper {
             return Err("Either macaroon_file or macaroon_hex must be provided".into());
         };
 
-        let client = block_on(tonic_openssl_lnd::connect(host, port, cert, macaroon))?;
+        let client = block_on(tonic_openssl_lnd::connect(host, port, cert, macaroon)).unwrap();
 
-        Ok(Arc::new(LNDWrapper { client }))
+        Ok(Arc::new(Mutex::new(LNDWrapper { client })))
     }
 }
 

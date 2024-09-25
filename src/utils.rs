@@ -67,9 +67,3 @@ fn get_preimage_from_string(preimage_string: String) -> Result<PaymentPreimage, 
   let preimage = PaymentPreimage(preimage_array);
   Ok(preimage)
 }
-
-pub fn get_root_key() -> String {
-    let root_key = env::var("ROOT_KEY")
-        .unwrap();
-    root_key
-}

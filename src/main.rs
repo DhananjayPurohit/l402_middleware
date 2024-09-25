@@ -79,15 +79,14 @@ fn free() -> Json<Response> {
 }
 
 #[get("/protected")]
-fn protected() -> Json<Response> {
-    // let lsatInfo = request.headers().get_one("LSAT").unwrap() as lsat::&LsatInfo;
-    let lsat_info = lsat::LsatInfo {
-        lsat_type: String::from("PAID"),
-        preimage: PaymentPreimage([0; 32]),
-        payment_hash: PaymentHash([0; 32]),
-        amount: 10000,
-        error: String::from("Error")
-    };
+fn protected(lsat_info: lsat::LsatInfo) -> Json<Response> {
+    // let lsat_info = request.headers().get_one("LSAT").unwrap() as lsat::LsatInfo;
+    // let lsat_info = lsat::LsatInfo {
+    //     lsat_type: String::from("PAID"),
+    //     preimage: Some(PaymentPreimage([0; 32])),
+    //     payment_hash: Some(PaymentHash([0; 32])),
+    //     error: Some(String::from("Error"))
+    // };
     let lsat_info_type = lsat_info.lsat_type.to_string();
     let response = match lsat_info_type.as_str() {
         lsat::LSAT_TYPE_FREE => {
@@ -105,7 +104,7 @@ fn protected() -> Json<Response> {
         lsat::LSAT_TYPE_ERROR => {
             Response {
                 code: Status::InternalServerError.code,
-                message: format!("{}", lsat_info.error),
+                message: lsat_info.error.unwrap(),
             }
         }
         _ => {
@@ -149,7 +148,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
         amount: 0.01,
     };
 
-    let lsat_middleware = middleware::new_lsat_middleware(
+    let lsat_middleware = middleware::LsatMiddleware::new_lsat_middleware(
         ln_client_config.clone(),
         Arc::new(move |_req: &Request<'_>| fiat_rate_config.fiat_to_btc_amount_func())
     );

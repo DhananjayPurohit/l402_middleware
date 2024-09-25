@@ -1,5 +1,10 @@
 use lightning::ln::{PaymentHash, PaymentPreimage};
 use macaroon::{Macaroon, Caveat, ByteString};
+use rocket::{request, Request};
+use rocket::http::Status;
+
+use crate::utils;
+use crate::lsat;
 
 pub const LSAT_TYPE_FREE: &str = "FREE";
 pub const LSAT_TYPE_PAID: &str = "PAID";
@@ -11,24 +16,42 @@ pub const FREE_CONTENT_MESSAGE: &str = "Free Content";
 pub const PROTECTED_CONTENT_MESSAGE: &str = "Protected Content";
 pub const PAYMENT_REQUIRED_MESSAGE: &str = "Payment Required";
 
+#[derive(Clone)]
 pub struct LsatInfo {
 	pub	lsat_type: String,
-	pub preimage: PaymentPreimage,
-	pub payment_hash: PaymentHash,
-	pub amount: u64,
-	pub error: String
+	pub preimage: Option<PaymentPreimage>,
+	pub payment_hash: Option<PaymentHash>,
+	pub error: Option<String>
 }
 
-fn verify_lsat(
+#[rocket::async_trait]
+impl<'r> request::FromRequest<'r> for LsatInfo {
+    type Error = &'static str;
+
+    async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
+        // Retrieve LsatInfo from the local cache
+        let lsat_info = request.local_cache::<LsatInfo, _>(|| {
+            LsatInfo {
+                lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
+                error: Some("No LSAT header present".to_string()),
+                preimage: None,
+                payment_hash: None,
+            }
+        });
+
+        request::Outcome::Success(lsat_info.clone())
+    }
+}
+
+pub fn verify_lsat(
     mac: &Macaroon,
-    conditions: Vec<Caveat>,
     root_key: Vec<u8>,
-    preimage: String,
+    preimage: PaymentPreimage,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // caveat verification need to be done
 
     let macaroon_id = mac.identifier().clone();
-    if macaroon_id == ByteString::from(preimage.clone()) {
+    if macaroon_id == ByteString::from(format!("{:?}", preimage)) {
         return Ok(());
     } else {
         println!("Invalid Preimage {:?} for PaymentHash {:?}", preimage, macaroon_id);
