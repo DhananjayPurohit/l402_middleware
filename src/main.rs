@@ -9,7 +9,7 @@ use dotenv::dotenv;
 use std::env;
 use std::sync::Arc;
 use reqwest::Client;
-use futures::executor::block_on;
+use tokio::runtime::Handle;
 
 mod lsat;
 mod middleware;
@@ -56,7 +56,7 @@ impl FiatRateConfig {
             }
         };
 
-        block_on(future)
+        Handle::current().block_on(future)
     }
 }
 

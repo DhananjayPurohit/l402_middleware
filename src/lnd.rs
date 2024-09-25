@@ -1,5 +1,5 @@
 use std::{fs, error::Error, sync::Arc, sync::Mutex};
-use futures::executor::block_on;
+use tokio::runtime::Handle;
 use macaroon::Macaroon;
 use tonic_openssl_lnd::{LndClient};
 use tonic_openssl_lnd::lnrpc;
@@ -22,7 +22,7 @@ pub struct LNDWrapper {
 }
 
 impl LNDWrapper {
-    pub fn new_client(
+    pub async fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
         let lnd_options = ln_client_config.lnd_config.clone();
@@ -61,7 +61,7 @@ impl LNDWrapper {
             return Err("Either macaroon_file or macaroon_hex must be provided".into());
         };
 
-        let client = block_on(tonic_openssl_lnd::connect(host, port, cert, macaroon)).unwrap();
+        let client = tonic_openssl_lnd::connect(host, port, cert, macaroon).await.unwrap();
 
         Ok(Arc::new(Mutex::new(LNDWrapper { client })))
     }
@@ -73,7 +73,7 @@ impl lnclient::LNClient for LNDWrapper {
         invoice: lnrpc::Invoice,
     ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error>> {
         let client = &mut self.client;
-        let response = block_on(client.lightning().add_invoice(invoice))?;
+        let response = Handle::current().block_on(client.lightning().add_invoice(invoice))?;
         Ok(response.into_inner())
     }
 }

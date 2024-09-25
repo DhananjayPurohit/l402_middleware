@@ -29,10 +29,10 @@ pub struct LNClientConn {
 }
 
 impl LNClientConn {
-    pub fn init(ln_client_config: &LNClientConfig) -> Result<Arc<Mutex<dyn LNClient>>, Box<dyn Error + Send + Sync>> {
+    pub async fn init(ln_client_config: &LNClientConfig) -> Result<Arc<Mutex<dyn LNClient>>, Box<dyn Error + Send + Sync>> {
         let ln_client: Arc<Mutex<dyn LNClient>> = match ln_client_config.ln_client_type.as_str() {
-            LND_CLIENT_TYPE => lnd::LNDWrapper::new_client(ln_client_config)?,
-            LNURL_CLIENT_TYPE => lnurl::LnAddressUrlResJson::new_client(ln_client_config)?,
+            LND_CLIENT_TYPE => lnd::LNDWrapper::new_client(ln_client_config).await?,
+            LNURL_CLIENT_TYPE => lnurl::LnAddressUrlResJson::new_client(ln_client_config).await?,
             _ => {
                 return Err(format!(
                     "LN Client type not recognized: {}",

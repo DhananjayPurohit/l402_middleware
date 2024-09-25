@@ -1,5 +1,5 @@
 use reqwest::{Client, Error};
-use futures::executor::block_on;
+use tokio::runtime::Handle;
 use serde::Deserialize;
 use std::convert::TryInto;
 use rocket::serde::json::serde_json;
@@ -48,12 +48,12 @@ pub struct DecodedPR {
 }
 
 impl LnAddressUrlResJson {
-    pub fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
         let lnurl_options = ln_client_config.lnurl_config.clone();
         let (username, domain) = utils::parse_ln_address(lnurl_options.address)?;
     
         let ln_address_url = format!("https://{}/.well-known/lnurlp/{}", domain, username);
-        let ln_address_url_res_body = block_on(do_get_request(&ln_address_url));
+        let ln_address_url_res_body = do_get_request(&ln_address_url).await;
     
         let ln_address_url_res: LnAddressUrlResJson = serde_json::from_str(&ln_address_url_res_body.unwrap())?;
         Ok(Arc::new(Mutex::new(ln_address_url_res)))
@@ -71,7 +71,7 @@ impl lnclient::LNClient for LnAddressUrlResJson {
             MSAT_PER_SAT * (ln_invoice.value as u64)
         );
 
-        let callback_url_res_body = block_on(do_get_request(&callback_url))?;
+        let callback_url_res_body = Handle::current().block_on(do_get_request(&callback_url))?;
 
         let callback_url_res_json: CallbackUrlResJson =
             serde_json::from_str(&callback_url_res_body)?;

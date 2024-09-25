@@ -22,12 +22,12 @@ pub struct LsatMiddleware {
 }
 
 impl LsatMiddleware {
-    pub fn new_lsat_middleware(
+    pub async fn new_lsat_middleware(
         ln_client_config: lnclient::LNClientConfig,
         amount_func: AmountFunc,
     ) -> Result<LsatMiddleware, Box<dyn Error + Send + Sync>> {
         // Initialize the LNClient using the configuration
-        let ln_client = lnclient::LNClientConn::init(&ln_client_config)?;
+        let ln_client = lnclient::LNClientConn::init(&ln_client_config).await?;
     
         // Create and return the LsatMiddleware instance
         Ok(LsatMiddleware {
@@ -130,6 +130,13 @@ impl Fairing for LsatMiddleware {
                     println!("Error parsing LSAT header: {}", error);
                 },
             }
+        } else {
+            request.local_cache(|| lsat::LsatInfo {
+                lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
+                preimage: None,
+                payment_hash: None,
+                error: None,
+            });
         }
     }
 }
