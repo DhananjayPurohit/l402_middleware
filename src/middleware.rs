@@ -7,13 +7,15 @@ use std::sync::{Arc, Mutex};
 use std::error::Error;
 use lightning::ln::PaymentHash;
 use tonic_openssl_lnd::lnrpc;
+use std::pin::Pin;
+use std::future::Future;
 
 use crate::utils;
 use crate::lsat;
 use crate::lnclient;
 use crate::macaroon::get_macaroon_as_string;
 
-type AmountFunc = Arc<dyn Fn(&Request<'_>) -> i64 + Send + Sync>;
+type AmountFunc = Arc<dyn Fn(&Request<'_>) -> Pin<Box<dyn Future<Output = i64> + Send>> + Send + Sync>;
 
 pub struct LsatMiddleware {
     pub amount_func: AmountFunc,
@@ -37,9 +39,9 @@ impl LsatMiddleware {
         })
     }
 
-    pub fn set_lsat_header(&self, request: &mut Request<'_>) {
+    pub async fn set_lsat_header(&self, request: &mut Request<'_>) {
         let ln_invoice = lnrpc::Invoice {
-            value: (self.amount_func)(request),
+            value: (self.amount_func)(request).await,
             memo: "LSAT".to_string(),
             ..Default::default()
         };
@@ -92,14 +94,11 @@ impl Fairing for LsatMiddleware {
                 Ok((mac, preimage)) => {
                     match lsat::verify_lsat(&mac, self.root_key.clone(), preimage) {
                         Ok(_) => {
-                            let macaroon_id = mac.identifier().clone();
-                            let hash: [u8; 32] = macaroon_id.0.try_into().map_err(|_| {
-                                "Invalid length for macaroon id, must be 32 bytes".to_string()
-                            }).unwrap();
+                            let payment_hash: PaymentHash = PaymentHash::from(preimage);
                             request.local_cache(|| lsat::LsatInfo {
                                 lsat_type: lsat::LSAT_TYPE_PAID.to_string(),
                                 preimage: Some(preimage),
-                                payment_hash: Some(PaymentHash(hash)),
+                                payment_hash: Some(payment_hash),
                                 error: None,
                             });
                         },
@@ -117,7 +116,7 @@ impl Fairing for LsatMiddleware {
                 Err(error) => {
                     if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
                         if accept_lsat_field.contains(lsat::LSAT_HEADER) {
-                            LsatMiddleware::set_lsat_header(self, request);
+                            LsatMiddleware::set_lsat_header(self, request).await;
                         } else {
                             request.local_cache(|| lsat::LsatInfo {
                                 lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
@@ -126,17 +125,30 @@ impl Fairing for LsatMiddleware {
                                 error: None,
                             });
                         }
+                    } else {
+                        request.local_cache(|| lsat::LsatInfo {
+                            lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
+                            error: Some(error.to_string()),
+                            preimage: None,
+                            payment_hash: None,
+                        });
+                        println!("Error parsing LSAT: {}", error);
                     }
-                    println!("Error parsing LSAT header: {}", error);
                 },
             }
         } else {
-            request.local_cache(|| lsat::LsatInfo {
-                lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
-                preimage: None,
-                payment_hash: None,
-                error: None,
-            });
+            if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
+                if accept_lsat_field.contains(lsat::LSAT_HEADER) {
+                    LsatMiddleware::set_lsat_header(self, request).await;
+                } else {
+                    request.local_cache(|| lsat::LsatInfo {
+                        lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
+                        preimage: None,
+                        payment_hash: None,
+                        error: None,
+                    });
+                }
+            }
         }
     }
 }

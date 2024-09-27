@@ -22,9 +22,16 @@ pub struct LNURLOptions {
 #[derive(Debug, serde::Deserialize)]
 pub struct LnAddressUrlResJson {
     callback: String,
+
+    #[serde(rename = "maxSendable")]
     max_sendable: u64,
+
+    #[serde(rename = "minSendable")]
     min_sendable: u64,
+
     metadata: String,
+
+    #[serde(rename = "commentAllowed")]
     comment_allowed: u32,
     tag: String,
 }

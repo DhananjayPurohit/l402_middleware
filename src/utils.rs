@@ -46,14 +46,14 @@ pub fn parse_ln_address(address: String) -> Result<(String, String), String> {
 }
 
 fn get_macaroon_from_string(macaroon_string: String) -> Result<Macaroon, String> {
-    if macaroon_string.is_empty() || !base64::decode(&macaroon_string).is_ok() {
-        return Err(format!("Invalid macaroon string"));
-    }
+  if macaroon_string.is_empty() {
+    return Err("Macaroon string is empty".to_string());
+  }
 
-    let mac_bytes = base64::decode(&macaroon_string).unwrap();
-    let mac = Macaroon::deserialize(&mac_bytes).unwrap();
+  let mac = Macaroon::deserialize(&macaroon_string)
+    .map_err(|_| "Failed to deserialize macaroon".to_string())?;
 
-    Ok(mac)
+  Ok(mac)
 }
 
 fn get_preimage_from_string(preimage_string: String) -> Result<PaymentPreimage, String> {

@@ -2,6 +2,7 @@ use lightning::ln::{PaymentHash, PaymentPreimage};
 use macaroon::{Macaroon, Caveat, ByteString};
 use rocket::{request, Request};
 use rocket::http::Status;
+use hex;
 
 use crate::utils;
 use crate::lsat;
@@ -51,11 +52,16 @@ pub fn verify_lsat(
     // caveat verification need to be done
 
     let macaroon_id = mac.identifier().clone();
-    if macaroon_id == ByteString::from(format!("{:?}", preimage)) {
+    let macaroon_id_hex = hex::encode(macaroon_id.0).replace("ff", "");
+    let payment_hash: PaymentHash = PaymentHash::from(preimage);
+    let payment_hash_hex = hex::encode(payment_hash.0);
+
+    if macaroon_id_hex.contains(&payment_hash_hex) {
         return Ok(());
     } else {
-        println!("Invalid Preimage {:?} for PaymentHash {:?}", preimage, macaroon_id);
+        return Err(format!(
+            "Invalid PaymentHash {} for macaroon {}",
+            payment_hash_hex, macaroon_id_hex
+        ).into());
     }
-
-    return Ok(());
 }

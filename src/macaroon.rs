@@ -15,7 +15,7 @@ pub fn get_macaroon_as_string(
     let mut mac = Macaroon::create(
         Some("LSAT".into()),
         &key,
-        ByteString::from(hex::encode(payment_hash.0)),
+        payment_hash.0.into(),
     )?;
 
     for caveat in caveats {

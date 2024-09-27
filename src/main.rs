@@ -31,32 +31,28 @@ pub struct FiatRateConfig {
 }
 
 impl FiatRateConfig {
-    pub fn fiat_to_btc_amount_func(&self) -> i64 {
+    pub async fn fiat_to_btc_amount_func(&self) -> i64 {
         // If amount is invalid, return the minimum sats.
-        let future = async {
-            if self.amount <= 0.0 {
-                return MIN_SATS_TO_BE_PAID;
-            }
+        if self.amount <= 0.0 {
+            return MIN_SATS_TO_BE_PAID;
+        }
 
-            // API request to get BTC equivalent of the fiat amount.
-            let url = format!(
-                "https://blockchain.info/tobtc?currency={}&value={}",
-                self.currency, self.amount
-            );
+        // API request to get BTC equivalent of the fiat amount.
+        let url = format!(
+            "https://blockchain.info/tobtc?currency={}&value={}",
+            self.currency, self.amount
+        );
 
-            match Client::new().get(&url).send().await {
-                Ok(res) => {
-                    let body = res.text().await.unwrap_or_else(|_| MIN_SATS_TO_BE_PAID.to_string());
-                    match body.parse::<f64>() {
-                        Ok(amount_in_btc) => (SATS_PER_BTC as f64 * amount_in_btc) as i64,
-                        Err(_) => MIN_SATS_TO_BE_PAID,
-                    }
+        match Client::new().get(&url).send().await {
+            Ok(res) => {
+                let body = res.text().await.unwrap_or_else(|_| MIN_SATS_TO_BE_PAID.to_string());
+                match body.parse::<f64>() {
+                    Ok(amount_in_btc) => (SATS_PER_BTC as f64 * amount_in_btc) as i64,
+                    Err(_) => MIN_SATS_TO_BE_PAID,
                 }
-                Err(_) => MIN_SATS_TO_BE_PAID,
             }
-        };
-
-        Handle::current().block_on(future)
+            Err(_) => MIN_SATS_TO_BE_PAID,
+        }
     }
 }
 
@@ -80,13 +76,6 @@ fn free() -> Json<Response> {
 
 #[get("/protected")]
 fn protected(lsat_info: lsat::LsatInfo) -> Json<Response> {
-    // let lsat_info = request.headers().get_one("LSAT").unwrap() as lsat::LsatInfo;
-    // let lsat_info = lsat::LsatInfo {
-    //     lsat_type: String::from("PAID"),
-    //     preimage: Some(PaymentPreimage([0; 32])),
-    //     payment_hash: Some(PaymentHash([0; 32])),
-    //     error: Some(String::from("Error"))
-    // };
     let lsat_info_type = lsat_info.lsat_type.to_string();
     let response = match lsat_info_type.as_str() {
         lsat::LSAT_TYPE_FREE => {
@@ -120,7 +109,7 @@ fn protected(lsat_info: lsat::LsatInfo) -> Json<Response> {
 }
 
 #[launch]
-fn rocket() -> rocket::Rocket<rocket::Build> {
+async fn rocket() -> rocket::Rocket<rocket::Build> {
      // Load environment variables from .env file
     dotenv().ok();
 
@@ -143,19 +132,22 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
     };
 
     // Initialize Fiat Rate Config
-    let fiat_rate_config = FiatRateConfig {
+    let fiat_rate_config = Arc::new(FiatRateConfig {
         currency: "USD".to_string(),
         amount: 0.01,
-    };
+    });
 
     let lsat_middleware = middleware::LsatMiddleware::new_lsat_middleware(
         ln_client_config.clone(),
-        Arc::new(move |_req: &Request<'_>| fiat_rate_config.fiat_to_btc_amount_func())
-    );
+        Arc::new(move |_req: &Request<'_>| {
+            let fiat_rate_config = Arc::clone(&fiat_rate_config);
+            Box::pin(async move {
+                fiat_rate_config.fiat_to_btc_amount_func().await
+            })
+        })
+    ).await.unwrap();
 
     rocket::build()
-        .attach(rocket::fairing::AdHoc::on_ignite("LsatMiddleware", |rocket| async {
-            rocket.manage(lsat_middleware)
-        }))
+        .attach(lsat_middleware)
         .mount("/", routes![free, protected])
 }
