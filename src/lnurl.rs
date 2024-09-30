@@ -1,13 +1,15 @@
 use reqwest::{Client, Error};
-use tokio::runtime::Handle;
 use serde::Deserialize;
 use std::convert::TryInto;
 use rocket::serde::json::serde_json;
 use lightning::ln::PaymentHash;
 use tonic_openssl_lnd::lnrpc;
 use lightning_invoice::{Bolt11Invoice, SignedRawBolt11Invoice};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use bitcoin::hashes::Hash;
+use tokio::sync::Mutex;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::utils;
 use crate::lnclient;
@@ -69,30 +71,32 @@ impl LnAddressUrlResJson {
 
 impl lnclient::LNClient for LnAddressUrlResJson {
     fn add_invoice(
-        &mut self,
+        &self,
         ln_invoice: lnrpc::Invoice,
-    ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn std::error::Error>> {
+    ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn std::error::Error + Send + Sync>>> + Send>> {
         let callback_url = format!(
             "{}?amount={}",
             self.callback,
             MSAT_PER_SAT * (ln_invoice.value as u64)
         );
 
-        let callback_url_res_body = Handle::current().block_on(do_get_request(&callback_url))?;
+        Box::pin(async move {
+            let callback_url_res_body = do_get_request(&callback_url).await?;
 
-        let callback_url_res_json: CallbackUrlResJson =
-            serde_json::from_str(&callback_url_res_body)?;
+            let callback_url_res_json: CallbackUrlResJson =
+                serde_json::from_str(&callback_url_res_body)?;
 
-        let invoice = callback_url_res_json.pr;
-        let decoded_invoice = Bolt11Invoice::from_signed(invoice.parse::<SignedRawBolt11Invoice>().unwrap()).unwrap();
-        let payment_hash = decoded_invoice.payment_hash();
-        let payment_addr = decoded_invoice.payment_secret();
+            let invoice = callback_url_res_json.pr;
+            let decoded_invoice = Bolt11Invoice::from_signed(invoice.parse::<SignedRawBolt11Invoice>().unwrap()).unwrap();
+            let payment_hash = decoded_invoice.payment_hash();
+            let payment_addr = decoded_invoice.payment_secret();
 
-        Ok(lnrpc::AddInvoiceResponse {
-            r_hash: payment_hash.to_byte_array().to_vec(),
-            payment_request: invoice,
-            add_index: 0,
-            payment_addr: payment_addr.0.to_vec(),
+            Ok(lnrpc::AddInvoiceResponse {
+                r_hash: payment_hash.to_byte_array().to_vec(),
+                payment_request: invoice,
+                add_index: 0,
+                payment_addr: payment_addr.0.to_vec(),
+            })
         })
     }
 }

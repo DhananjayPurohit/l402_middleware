@@ -9,7 +9,6 @@ use dotenv::dotenv;
 use std::env;
 use std::sync::Arc;
 use reqwest::Client;
-use tokio::runtime::Handle;
 
 mod lsat;
 mod middleware;

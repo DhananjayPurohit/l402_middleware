@@ -3,12 +3,13 @@ use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::{Header, Status};
 use rocket::response::status;
 use rocket::serde::json::{json, Json};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::error::Error;
 use lightning::ln::PaymentHash;
 use tonic_openssl_lnd::lnrpc;
 use std::pin::Pin;
 use std::future::Future;
+use tokio::sync::Mutex;
 
 use crate::utils;
 use crate::lsat;
@@ -48,7 +49,7 @@ impl LsatMiddleware {
         let ln_client_conn = lnclient::LNClientConn{
             ln_client: self.ln_client.clone(),
         };
-        match ln_client_conn.generate_invoice(ln_invoice) {
+        match ln_client_conn.generate_invoice(ln_invoice).await {
             Ok((invoice, payment_hash)) => {
                 match get_macaroon_as_string(payment_hash, &[], self.root_key.clone()) {
                     Ok(macaroon_string) => {

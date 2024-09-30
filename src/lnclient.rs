@@ -1,7 +1,10 @@
 use tonic_openssl_lnd::lnrpc;
 use lightning::ln::{PaymentHash};
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::lnurl;
 use crate::lnd;
@@ -19,9 +22,9 @@ pub struct LNClientConfig {
 
 pub trait LNClient: Send + Sync + 'static {
     fn add_invoice(
-        &mut self,
+        &self,
         invoice: lnrpc::Invoice,
-    ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error>>;
+    ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>> + Send>>;
 }
 
 pub struct LNClientConn {
@@ -45,12 +48,12 @@ impl LNClientConn {
         Ok(ln_client)
     }
 
-    pub fn generate_invoice(
+    pub async fn generate_invoice(
         &self,
         ln_invoice: lnrpc::Invoice,
-    ) -> Result<(String, PaymentHash), Box<dyn Error>> {
-        let mut client = &mut self.ln_client.lock().unwrap();
-        let ln_client_invoice = &mut client.add_invoice(ln_invoice)?;
+    ) -> Result<(String, PaymentHash), Box<dyn Error + Send + Sync>> {
+        let mut client = &mut self.ln_client.lock().await;
+        let ln_client_invoice = &mut client.add_invoice(ln_invoice).await?;
 
         let invoice = &ln_client_invoice.payment_request;
         let hash: [u8; 32] = ln_client_invoice.r_hash.clone().try_into().map_err(|_| "Invalid length for r_hash, must be 32 bytes")?;

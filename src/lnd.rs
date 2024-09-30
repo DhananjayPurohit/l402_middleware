@@ -1,10 +1,12 @@
-use std::{fs, error::Error, sync::Arc, sync::Mutex};
-use tokio::runtime::Handle;
+use std::{fs, error::Error, sync::Arc};
 use macaroon::Macaroon;
 use tonic_openssl_lnd::{LndClient};
 use tonic_openssl_lnd::lnrpc;
 use base64;
 use std::io::BufReader;
+use tokio::sync::Mutex;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::lnclient;
 
@@ -18,7 +20,7 @@ pub struct LNDOptions {
 }
 
 pub struct LNDWrapper {
-    client: LndClient,
+    client: Arc<Mutex<LndClient>>,
 }
 
 impl LNDWrapper {
@@ -63,17 +65,20 @@ impl LNDWrapper {
 
         let client = tonic_openssl_lnd::connect(host, port, cert, macaroon).await.unwrap();
 
-        Ok(Arc::new(Mutex::new(LNDWrapper { client })))
+        Ok(Arc::new(Mutex::new(LNDWrapper { client: Arc::new(Mutex::new(client)) })))
     }
 }
 
 impl lnclient::LNClient for LNDWrapper {
     fn add_invoice(
-        &mut self,
+        &self,
         invoice: lnrpc::Invoice,
-    ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error>> {
-        let client = &mut self.client;
-        let response = Handle::current().block_on(client.lightning().add_invoice(invoice))?;
-        Ok(response.into_inner())
+    ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>> + Send>> {
+        let client = Arc::clone(&self.client);
+        Box::pin(async move {
+            let mut client = client.lock().await;
+            let response = client.lightning().add_invoice(invoice).await?;
+            Ok(response.into_inner())
+        })
     }
 }
