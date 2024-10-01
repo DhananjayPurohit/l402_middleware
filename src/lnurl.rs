@@ -1,8 +1,5 @@
 use reqwest::{Client, Error};
-use serde::Deserialize;
-use std::convert::TryInto;
 use rocket::serde::json::serde_json;
-use lightning::ln::PaymentHash;
 use tonic_openssl_lnd::lnrpc;
 use lightning_invoice::{Bolt11Invoice, SignedRawBolt11Invoice};
 use std::sync::Arc;

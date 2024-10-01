@@ -1,13 +1,12 @@
 use lightning::ln::{PaymentHash, PaymentPreimage};
 use macaroon::{Macaroon, Caveat, ByteString};
 use rocket::{request, Request};
-use rocket::http::Status;
 use hex;
 
-use crate::utils;
 use crate::lsat;
 
 pub const LSAT_TYPE_FREE: &str = "FREE";
+pub const LSAT_TYPE_PAYMENT_REQUIRED: &str = "PAYMENT REQUIRED";
 pub const LSAT_TYPE_PAID: &str = "PAID";
 pub const LSAT_TYPE_ERROR: &str = "ERROR";
 pub const LSAT_HEADER: &str = "LSAT";

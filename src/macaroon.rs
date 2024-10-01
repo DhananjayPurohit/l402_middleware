@@ -1,9 +1,6 @@
 use macaroon::{Macaroon, MacaroonKey, ByteString, Format};
 use serde::{Deserialize, Serialize};
 use lightning::ln::{PaymentHash};
-use rocket::serde::json::from_slice;
-use rand;
-use hex;
 
 pub fn get_macaroon_as_string(
     payment_hash: PaymentHash,
@@ -26,13 +23,4 @@ pub fn get_macaroon_as_string(
     let macaroon_string = base64::encode(mac_bytes);
 
     Ok(macaroon_string)
-}
-
-fn generate_token_id() -> Result<[u8; 32], Box<dyn std::error::Error>> {
-    let mut token_id: [u8; 32] = [0; 32];
-    for i in 0..32 {
-        let random_byte = rand::random::<u8>();
-        token_id[i] = random_byte;
-    }
-    Ok(token_id)
 }

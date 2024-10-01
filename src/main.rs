@@ -4,7 +4,6 @@ use rocket::serde::json::Json;
 use rocket::serde::Serialize;
 use rocket::http::Status;
 use rocket::Request;
-use lightning::ln::{PaymentPreimage, PaymentHash};
 use dotenv::dotenv;
 use std::env;
 use std::sync::Arc;
@@ -81,6 +80,12 @@ fn protected(lsat_info: lsat::LsatInfo) -> Json<Response> {
             Response {
                 code: Status::Ok.code,
                 message: String::from("Free content"),
+            }
+        }
+        lsat::LSAT_TYPE_PAYMENT_REQUIRED => {
+            Response {
+                code: Status::PaymentRequired.code,
+                message: String::from("Pay the invoice attached in header"),
             }
         }
         lsat::LSAT_TYPE_PAID => {

@@ -1,9 +1,7 @@
-use std::{fs, error::Error, sync::Arc};
-use macaroon::Macaroon;
+use std::{error::Error, sync::Arc};
 use tonic_openssl_lnd::{LndClient};
 use tonic_openssl_lnd::lnrpc;
 use base64;
-use std::io::BufReader;
 use tokio::sync::Mutex;
 use std::future::Future;
 use std::pin::Pin;

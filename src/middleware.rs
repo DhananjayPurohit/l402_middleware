@@ -1,8 +1,6 @@
 use rocket::{Request, Data};
 use rocket::fairing::{Fairing, Info, Kind};
-use rocket::http::{Header, Status};
-use rocket::response::status;
-use rocket::serde::json::{json, Json};
+use rocket::http::Header;
 use std::sync::Arc;
 use std::error::Error;
 use lightning::ln::PaymentHash;
@@ -118,6 +116,12 @@ impl Fairing for LsatMiddleware {
                     if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
                         if accept_lsat_field.contains(lsat::LSAT_HEADER) {
                             LsatMiddleware::set_lsat_header(self, request).await;
+                            request.local_cache(|| lsat::LsatInfo {
+                                lsat_type: lsat::LSAT_TYPE_PAYMENT_REQUIRED.to_string(),
+                                preimage: None,
+                                payment_hash: None,
+                                error: None,
+                            });
                         } else {
                             request.local_cache(|| lsat::LsatInfo {
                                 lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
@@ -141,6 +145,12 @@ impl Fairing for LsatMiddleware {
             if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
                 if accept_lsat_field.contains(lsat::LSAT_HEADER) {
                     LsatMiddleware::set_lsat_header(self, request).await;
+                    request.local_cache(|| lsat::LsatInfo {
+                        lsat_type: lsat::LSAT_TYPE_PAYMENT_REQUIRED.to_string(),
+                        preimage: None,
+                        payment_hash: None,
+                        error: None,
+                    });
                 } else {
                     request.local_cache(|| lsat::LsatInfo {
                         lsat_type: lsat::LSAT_TYPE_FREE.to_string(),

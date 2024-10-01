@@ -1,8 +1,6 @@
 use lightning::ln::{PaymentPreimage};
 use macaroon::Macaroon;
-use base64;
 use hex;
-use std::env;
 
 pub fn parse_lsat_header(auth_field: &str) -> Result<(Macaroon, PaymentPreimage), String> {
     // Check if the authorization field is empty

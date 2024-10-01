@@ -52,7 +52,7 @@ impl LNClientConn {
         &self,
         ln_invoice: lnrpc::Invoice,
     ) -> Result<(String, PaymentHash), Box<dyn Error + Send + Sync>> {
-        let mut client = &mut self.ln_client.lock().await;
+        let client = &mut self.ln_client.lock().await;
         let ln_client_invoice = &mut client.add_invoice(ln_invoice).await?;
 
         let invoice = &ln_client_invoice.payment_request;
