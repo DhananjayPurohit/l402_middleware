@@ -21,7 +21,8 @@ pub struct LsatInfo {
 	pub	lsat_type: String,
 	pub preimage: Option<PaymentPreimage>,
 	pub payment_hash: Option<PaymentHash>,
-	pub error: Option<String>
+	pub error: Option<String>,
+    pub auth_header: Option<String>,
 }
 
 #[rocket::async_trait]
@@ -36,6 +37,7 @@ impl<'r> request::FromRequest<'r> for LsatInfo {
                 error: Some("No LSAT header present".to_string()),
                 preimage: None,
                 payment_hash: None,
+                auth_header: None,
             }
         });
 

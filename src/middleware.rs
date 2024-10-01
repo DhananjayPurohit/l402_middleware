@@ -1,4 +1,4 @@
-use rocket::{Request, Data};
+use rocket::{Request, Response, Data};
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Header;
 use std::sync::Arc;
@@ -51,10 +51,13 @@ impl LsatMiddleware {
             Ok((invoice, payment_hash)) => {
                 match get_macaroon_as_string(payment_hash, &[], self.root_key.clone()) {
                     Ok(macaroon_string) => {
-                        request.add_header(Header::new(
-                            "WWW-Authenticate",
-                            format!("LSAT macaroon={}, invoice={}", macaroon_string, invoice)
-                        ));
+                        request.local_cache(|| lsat::LsatInfo {
+                            lsat_type: lsat::LSAT_TYPE_PAYMENT_REQUIRED.to_string(),
+                            preimage: None,
+                            payment_hash: None,
+                            error: None,
+                            auth_header: format!("LSAT macaroon={}, invoice={}", macaroon_string, invoice).into(),
+                        });
                     },
                     Err(error) => {
                         request.local_cache(|| lsat::LsatInfo {
@@ -62,6 +65,7 @@ impl LsatMiddleware {
                             error: Some(error.to_string()),
                             preimage: None,
                             payment_hash: None,
+                            auth_header: None,
                         });
                     }
                 }
@@ -72,6 +76,7 @@ impl LsatMiddleware {
                     error: Some(error.to_string()),
                     preimage: None,
                     payment_hash: None,
+                    auth_header: None,
                 });
             },
         }
@@ -83,7 +88,7 @@ impl Fairing for LsatMiddleware {
     fn info(&self) -> Info {
         Info {
             name: "Lsat Middleware",
-            kind: Kind::Request,
+            kind: Kind::Request | Kind::Response,
         }
     }
 
@@ -99,6 +104,7 @@ impl Fairing for LsatMiddleware {
                                 preimage: Some(preimage),
                                 payment_hash: Some(payment_hash),
                                 error: None,
+                                auth_header: None,
                             });
                         },
                         Err(error) => {
@@ -107,6 +113,7 @@ impl Fairing for LsatMiddleware {
                                 error: Some(error.to_string()),
                                 preimage: None,
                                 payment_hash: None,
+                                auth_header: None,
                             });
                             println!("Error verifying LSAT: {}", error);
                         }
@@ -116,18 +123,13 @@ impl Fairing for LsatMiddleware {
                     if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
                         if accept_lsat_field.contains(lsat::LSAT_HEADER) {
                             LsatMiddleware::set_lsat_header(self, request).await;
-                            request.local_cache(|| lsat::LsatInfo {
-                                lsat_type: lsat::LSAT_TYPE_PAYMENT_REQUIRED.to_string(),
-                                preimage: None,
-                                payment_hash: None,
-                                error: None,
-                            });
                         } else {
                             request.local_cache(|| lsat::LsatInfo {
                                 lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
                                 preimage: None,
                                 payment_hash: None,
                                 error: None,
+                                auth_header: None,
                             });
                         }
                     } else {
@@ -136,6 +138,7 @@ impl Fairing for LsatMiddleware {
                             error: Some(error.to_string()),
                             preimage: None,
                             payment_hash: None,
+                            auth_header: None,
                         });
                         println!("Error parsing LSAT: {}", error);
                     }
@@ -150,6 +153,7 @@ impl Fairing for LsatMiddleware {
                         preimage: None,
                         payment_hash: None,
                         error: None,
+                        auth_header: None,
                     });
                 } else {
                     request.local_cache(|| lsat::LsatInfo {
@@ -157,9 +161,28 @@ impl Fairing for LsatMiddleware {
                         preimage: None,
                         payment_hash: None,
                         error: None,
+                        auth_header: None,
                     });
                 }
             }
+        }
+    }
+
+    async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
+        // Retrieve LsatInfo from the local cache
+        let lsat_info = request.local_cache::<lsat::LsatInfo, _>(|| {
+            lsat::LsatInfo {
+                lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
+                error: Some("No LSAT header present".to_string()),
+                preimage: None,
+                payment_hash: None,
+                auth_header: None,
+            }
+        });
+
+        // Check if the auth header is set and add it to the response
+        if let Some(header_value) = &lsat_info.auth_header {
+            response.set_header(Header::new("WWW-Authenticate", header_value));
         }
     }
 }

@@ -63,53 +63,35 @@ struct Response {
 }
 
 #[get("/")]
-fn free() -> Json<Response> {
+fn free() -> (Status, Json<Response>) {
     let response = Response {
         code: Status::Ok.code,
         message: String::from("Free content"),
     };
 
-    Json(response)
+    (Status::Ok, Json(response))
 }
 
 #[get("/protected")]
-fn protected(lsat_info: lsat::LsatInfo) -> Json<Response> {
+fn protected(lsat_info: lsat::LsatInfo) -> (Status, Json<Response>) {
     let lsat_info_type = lsat_info.lsat_type.to_string();
-    let response = match lsat_info_type.as_str() {
-        lsat::LSAT_TYPE_FREE => {
-            Response {
-                code: Status::Ok.code,
-                message: String::from("Free content"),
-            }
-        }
-        lsat::LSAT_TYPE_PAYMENT_REQUIRED => {
-            Response {
-                code: Status::PaymentRequired.code,
-                message: String::from("Pay the invoice attached in header"),
-            }
-        }
-        lsat::LSAT_TYPE_PAID => {
-            Response {
-                code: Status::Ok.code,
-                message: String::from("Protected content"),
-            }
-        }
-        lsat::LSAT_TYPE_ERROR => {
-            Response {
-                code: Status::InternalServerError.code,
-                message: lsat_info.error.unwrap(),
-            }
-        }
-        _ => {
-            // Handle other cases
-            Response {
-                code: Status::InternalServerError.code,
-                message: String::from("Unknown type"),
-            }
-        }
+    let (status, message) = match lsat_info.lsat_type.as_str() {
+        lsat::LSAT_TYPE_FREE => (Status::Ok, String::from("Free content")),
+        lsat::LSAT_TYPE_PAYMENT_REQUIRED => (Status::PaymentRequired, String::from("Pay the invoice attached in response header")),
+        lsat::LSAT_TYPE_PAID => (Status::Ok, String::from("Protected content")),
+        lsat::LSAT_TYPE_ERROR => (
+            Status::InternalServerError,
+            lsat_info.error.clone().unwrap_or_else(|| String::from("An error occurred")),
+        ),
+        _ => (Status::InternalServerError, String::from("Unknown type")),
     };
 
-    Json(response)
+    let response = Response {
+        code: status.code,
+        message,
+    };
+
+    (status, Json(response))
 }
 
 #[launch]
