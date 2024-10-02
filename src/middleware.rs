@@ -8,16 +8,20 @@ use tonic_openssl_lnd::lnrpc;
 use std::pin::Pin;
 use std::future::Future;
 use tokio::sync::Mutex;
+use macaroon::Caveat;
 
 use crate::utils;
 use crate::lsat;
 use crate::lnclient;
-use crate::macaroon::get_macaroon_as_string;
+use crate::macaroon_util::get_macaroon_as_string;
 
 type AmountFunc = Arc<dyn Fn(&Request<'_>) -> Pin<Box<dyn Future<Output = i64> + Send>> + Send + Sync>;
 
+type CaveatFunc = Arc<dyn Fn(&Request<'_>) -> Vec<String> + Send + Sync>;
+
 pub struct LsatMiddleware {
     pub amount_func: AmountFunc,
+    pub caveat_func: CaveatFunc,
     pub ln_client: Arc<Mutex<dyn lnclient::LNClient>>,
     pub root_key: Vec<u8>,
 }
@@ -26,6 +30,7 @@ impl LsatMiddleware {
     pub async fn new_lsat_middleware(
         ln_client_config: lnclient::LNClientConfig,
         amount_func: AmountFunc,
+        caveat_func: CaveatFunc,
     ) -> Result<LsatMiddleware, Box<dyn Error + Send + Sync>> {
         // Initialize the LNClient using the configuration
         let ln_client = lnclient::LNClientConn::init(&ln_client_config).await?;
@@ -33,12 +38,13 @@ impl LsatMiddleware {
         // Create and return the LsatMiddleware instance
         Ok(LsatMiddleware {
             amount_func: amount_func,
+            caveat_func: caveat_func,
             ln_client,
             root_key: ln_client_config.root_key.clone(),
         })
     }
 
-    pub async fn set_lsat_header(&self, request: &mut Request<'_>) {
+    pub async fn set_lsat_header(&self, request: &mut Request<'_>, caveats: Vec<String>) {
         let ln_invoice = lnrpc::Invoice {
             value: (self.amount_func)(request).await,
             memo: "LSAT".to_string(),
@@ -49,7 +55,7 @@ impl LsatMiddleware {
         };
         match ln_client_conn.generate_invoice(ln_invoice).await {
             Ok((invoice, payment_hash)) => {
-                match get_macaroon_as_string(payment_hash, &[], self.root_key.clone()) {
+                match get_macaroon_as_string(payment_hash, caveats, self.root_key.clone()) {
                     Ok(macaroon_string) => {
                         request.local_cache(|| lsat::LsatInfo {
                             lsat_type: lsat::LSAT_TYPE_PAYMENT_REQUIRED.to_string(),
@@ -93,10 +99,13 @@ impl Fairing for LsatMiddleware {
     }
 
     async fn on_request(&self, request: &mut Request<'_>, _: &mut Data<'_>) {
+        let mut caveats: Vec<String> = Vec::new();
+        let caveat_func = Arc::clone(&self.caveat_func);
+        caveats = caveat_func(request);
         if let Some(auth_field) = request.headers().get_one("Authorization") {
             match utils::parse_lsat_header(auth_field) {
                 Ok((mac, preimage)) => {
-                    match lsat::verify_lsat(&mac, self.root_key.clone(), preimage) {
+                    match lsat::verify_lsat(&mac, caveats, self.root_key.clone(), preimage) {
                         Ok(_) => {
                             let payment_hash: PaymentHash = PaymentHash::from(preimage);
                             request.local_cache(|| lsat::LsatInfo {
@@ -122,7 +131,7 @@ impl Fairing for LsatMiddleware {
                 Err(error) => {
                     if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
                         if accept_lsat_field.contains(lsat::LSAT_HEADER) {
-                            LsatMiddleware::set_lsat_header(self, request).await;
+                            LsatMiddleware::set_lsat_header(self, request, caveats).await;
                         } else {
                             request.local_cache(|| lsat::LsatInfo {
                                 lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
@@ -147,7 +156,7 @@ impl Fairing for LsatMiddleware {
         } else {
             if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
                 if accept_lsat_field.contains(lsat::LSAT_HEADER) {
-                    LsatMiddleware::set_lsat_header(self, request).await;
+                    LsatMiddleware::set_lsat_header(self, request, caveats).await;
                     request.local_cache(|| lsat::LsatInfo {
                         lsat_type: lsat::LSAT_TYPE_PAYMENT_REQUIRED.to_string(),
                         preimage: None,

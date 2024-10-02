@@ -55,13 +55,21 @@ fn get_macaroon_from_string(macaroon_string: String) -> Result<Macaroon, String>
 }
 
 fn get_preimage_from_string(preimage_string: String) -> Result<PaymentPreimage, String> {
-  if preimage_string.is_empty() || !hex::decode(&preimage_string).is_ok() {
-      return Err(format!("Invalid preimage string"));
+  if preimage_string.is_empty() {
+    return Err("Preimage string is empty".to_string());
   }
 
-  let preimage_bytes = hex::decode(preimage_string).unwrap();
+  let preimage_bytes = match hex::decode(&preimage_string) {
+    Ok(bytes) => bytes,
+    Err(_) => return Err("Invalid hex in preimage string".to_string()),
+  };
+
+  if preimage_bytes.len() != 32 {
+    return Err("Preimage must be exactly 32 bytes long".to_string());
+  }
+
   let mut preimage_array = [0u8; 32];
   preimage_array.copy_from_slice(&preimage_bytes);
-  let preimage = PaymentPreimage(preimage_array);
-  Ok(preimage)
+
+  Ok(PaymentPreimage(preimage_array))
 }

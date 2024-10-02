@@ -12,7 +12,7 @@ use reqwest::Client;
 mod lsat;
 mod middleware;
 mod utils;
-mod macaroon;
+mod macaroon_util;
 mod lnclient;
 mod lnurl;
 mod lnd;
@@ -52,6 +52,12 @@ impl FiatRateConfig {
             Err(_) => MIN_SATS_TO_BE_PAID,
         }
     }
+}
+
+fn path_caveat(req: &Request<'_>) -> Vec<String> {
+    vec![
+        format!("RequestPath = {}", req.uri().path()),
+    ]
 }
 
 #[derive(Serialize)]
@@ -130,7 +136,10 @@ async fn rocket() -> rocket::Rocket<rocket::Build> {
             Box::pin(async move {
                 fiat_rate_config.fiat_to_btc_amount_func().await
             })
-        })
+        }),
+        Arc::new(move |req: &Request<'_>| {
+            path_caveat(req)
+        }),
     ).await.unwrap();
 
     rocket::build()

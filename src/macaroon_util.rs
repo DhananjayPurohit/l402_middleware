@@ -4,7 +4,7 @@ use lightning::ln::{PaymentHash};
 
 pub fn get_macaroon_as_string(
     payment_hash: PaymentHash,
-    caveats: &[String],
+    caveats: Vec<String>,
     root_key: Vec<u8>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let key = MacaroonKey::generate(&root_key);

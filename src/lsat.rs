@@ -1,5 +1,5 @@
 use lightning::ln::{PaymentHash, PaymentPreimage};
-use macaroon::{Macaroon, Caveat, ByteString};
+use macaroon::{Macaroon, Caveat, ByteString, Verifier, MacaroonKey};
 use rocket::{request, Request};
 use hex;
 
@@ -47,22 +47,36 @@ impl<'r> request::FromRequest<'r> for LsatInfo {
 
 pub fn verify_lsat(
     mac: &Macaroon,
+    caveats: Vec<String>,
     root_key: Vec<u8>,
     preimage: PaymentPreimage,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // caveat verification need to be done
+    // caveat verification
+    let mac_key = MacaroonKey::generate(&root_key);
+    let mut verifier = Verifier::default();
+    
+    for caveat in caveats {
+        verifier.satisfy_exact(caveat.into());
+    }
 
-    let macaroon_id = mac.identifier().clone();
-    let macaroon_id_hex = hex::encode(macaroon_id.0).replace("ff", "");
-    let payment_hash: PaymentHash = PaymentHash::from(preimage);
-    let payment_hash_hex = hex::encode(payment_hash.0);
+    match verifier.verify(&mac, &mac_key, Default::default()) {
+        Ok(_) => {
+            let macaroon_id = mac.identifier().clone();
+            let macaroon_id_hex = hex::encode(macaroon_id.0).replace("ff", "");
+            let payment_hash: PaymentHash = PaymentHash::from(preimage);
+            let payment_hash_hex = hex::encode(payment_hash.0);
 
-    if macaroon_id_hex.contains(&payment_hash_hex) {
-        return Ok(());
-    } else {
-        return Err(format!(
-            "Invalid PaymentHash {} for macaroon {}",
-            payment_hash_hex, macaroon_id_hex
-        ).into());
+            if macaroon_id_hex.contains(&payment_hash_hex) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Invalid PaymentHash {} for macaroon {}",
+                    payment_hash_hex, macaroon_id_hex
+                ).into())
+            }
+        },
+        Err(error) => {
+            Err(format!("Error validating macaroon: {:?}", error).into())
+        }
     }
 }
