@@ -8,7 +8,6 @@ use tonic_openssl_lnd::lnrpc;
 use std::pin::Pin;
 use std::future::Future;
 use tokio::sync::Mutex;
-use macaroon::Caveat;
 
 use crate::utils;
 use crate::lsat;
@@ -99,10 +98,9 @@ impl Fairing for LsatMiddleware {
     }
 
     async fn on_request(&self, request: &mut Request<'_>, _: &mut Data<'_>) {
-        let mut caveats: Vec<String> = Vec::new();
         let caveat_func = Arc::clone(&self.caveat_func);
-        caveats = caveat_func(request);
-        if let Some(auth_field) = request.headers().get_one("Authorization") {
+        let caveats = caveat_func(request);
+        if let Some(auth_field) = request.headers().get_one(lsat::LSAT_AUTHORIZATION_HEADER_NAME) {
             match utils::parse_lsat_header(auth_field) {
                 Ok((mac, preimage)) => {
                     match lsat::verify_lsat(&mac, caveats, self.root_key.clone(), preimage) {
@@ -191,7 +189,7 @@ impl Fairing for LsatMiddleware {
 
         // Check if the auth header is set and add it to the response
         if let Some(header_value) = &lsat_info.auth_header {
-            response.set_header(Header::new("WWW-Authenticate", header_value));
+            response.set_header(Header::new(lsat::LSAT_AUTHENTICATE_HEADER_NAME, header_value));
         }
     }
 }

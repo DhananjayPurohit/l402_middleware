@@ -1,5 +1,5 @@
 [package]
-name = "lsat-middleware-rust"
+name = "lsat_middleware"
 version = "0.1.0"
 edition = "2021"
 

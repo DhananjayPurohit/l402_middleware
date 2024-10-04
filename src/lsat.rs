@@ -1,5 +1,5 @@
 use lightning::ln::{PaymentHash, PaymentPreimage};
-use macaroon::{Macaroon, Caveat, ByteString, Verifier, MacaroonKey};
+use macaroon::{Macaroon, Verifier, MacaroonKey};
 use rocket::{request, Request};
 use hex;
 
@@ -11,10 +11,8 @@ pub const LSAT_TYPE_PAID: &str = "PAID";
 pub const LSAT_TYPE_ERROR: &str = "ERROR";
 pub const LSAT_HEADER: &str = "LSAT";
 pub const LSAT_HEADER_NAME: &str = "Accept-Authenticate";
-
-pub const FREE_CONTENT_MESSAGE: &str = "Free Content";
-pub const PROTECTED_CONTENT_MESSAGE: &str = "Protected Content";
-pub const PAYMENT_REQUIRED_MESSAGE: &str = "Payment Required";
+pub const LSAT_AUTHENTICATE_HEADER_NAME: &str = "WWW-Authenticate";
+pub const LSAT_AUTHORIZATION_HEADER_NAME: &str = "Authorization";
 
 #[derive(Clone)]
 pub struct LsatInfo {
@@ -52,6 +50,11 @@ pub fn verify_lsat(
     preimage: PaymentPreimage,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // caveat verification
+    let mac_caveats = mac.first_party_caveats();
+    if caveats.len() > mac_caveats.len() {
+        return Err("Error validating macaroon: Caveats don't match".into());
+    }
+
     let mac_key = MacaroonKey::generate(&root_key);
     let mut verifier = Verifier::default();
     

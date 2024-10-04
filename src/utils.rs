@@ -43,7 +43,7 @@ pub fn parse_ln_address(address: String) -> Result<(String, String), String> {
   Ok((username, domain))
 }
 
-fn get_macaroon_from_string(macaroon_string: String) -> Result<Macaroon, String> {
+pub fn get_macaroon_from_string(macaroon_string: String) -> Result<Macaroon, String> {
   if macaroon_string.is_empty() {
     return Err("Macaroon string is empty".to_string());
   }
@@ -54,7 +54,7 @@ fn get_macaroon_from_string(macaroon_string: String) -> Result<Macaroon, String>
   Ok(mac)
 }
 
-fn get_preimage_from_string(preimage_string: String) -> Result<PaymentPreimage, String> {
+pub fn get_preimage_from_string(preimage_string: String) -> Result<PaymentPreimage, String> {
   if preimage_string.is_empty() {
     return Err("Preimage string is empty".to_string());
   }

@@ -1183,7 +1183,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lsat-middleware-rust"
+name = "lsat_middleware"
 version = "0.1.0"
 dependencies = [
  "base64 0.21.7",

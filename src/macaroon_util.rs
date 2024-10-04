@@ -1,6 +1,6 @@
 use macaroon::{Macaroon, MacaroonKey, ByteString, Format};
-use serde::{Deserialize, Serialize};
 use lightning::ln::{PaymentHash};
+use base64;
 
 pub fn get_macaroon_as_string(
     payment_hash: PaymentHash,
@@ -19,8 +19,7 @@ pub fn get_macaroon_as_string(
         mac.add_first_party_caveat(ByteString::from(caveat.as_str()));
     }
 
-    let mac_bytes = mac.serialize(Format::V1).unwrap();
-    let macaroon_string = base64::encode(mac_bytes);
+    let macaroon_string = mac.serialize(Format::V1).unwrap();
 
     Ok(macaroon_string)
 }
