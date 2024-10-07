@@ -11,9 +11,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
 
     steps:
       - name: Checkout code
@@ -33,13 +30,18 @@ jobs:
       - name: Create env file
         run: |
           touch .env
-          echo 'LN CLEINT TYPE ${{ secrets.LN_CLIENT_TYPE }}'
           echo LND_ADDRESS=${{ secrets.LND_ADDRESS }} >> .env
           echo MACAROON_HEX=${{ secrets.MACAROON_HEX }} >> .env
           echo LNURL_ADDRESS=${{ secrets.LNURL_ADDRESS }} >> .env
-          echo LN_CLIENT_TYPE=${{ secrets.LN_CLIENT_TYPE }} >> .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
           cat .env
 
-      - name: Run tests
+      - name: Run tests for LNURL
         run: cargo test --verbose
+        env: 
+          LN_CLIENT_TYPE: LNURL
+
+      - name: Run tests for LND
+        run: cargo test --verbose
+        env:
+          LN_CLIENT_TYPE: LND
