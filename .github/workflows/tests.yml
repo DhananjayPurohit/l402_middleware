@@ -27,5 +27,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
 
+      - name: Create env file
+        run: |
+          touch .env
+          echo LND_ADDRESS=${{ secrets.LND_ADDRESS }} >> .env
+          echo MACAROON_HEX=${{ secrets.MACAROON_HEX }} >> .env
+          echo LNURL_ADDRESS=${{ secrets.LNURL_ADDRESS }} >> .env
+          echo LN_CLIENT_TYPE=${{ secrets.LN_CLIENT_TYPE }} >> .env
+          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
+          cat .env
+
       - name: Run tests
         run: cargo test --verbose
