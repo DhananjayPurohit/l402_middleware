@@ -25,7 +25,7 @@ impl LNDWrapper {
     pub async fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
-        let lnd_options = ln_client_config.lnd_config.clone();
+        let lnd_options = ln_client_config.lnd_config.clone().unwrap();
         // Parse the port from the LNDOptions address, assuming the format is "host:port"
         let address = lnd_options.address.clone();
         let parts: Vec<&str> = address.split(':').collect();

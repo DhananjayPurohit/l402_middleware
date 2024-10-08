@@ -15,8 +15,8 @@ const LNURL_CLIENT_TYPE: &str = "LNURL";
 #[derive(Debug, Clone)]
 pub struct LNClientConfig {
     pub ln_client_type: String,
-    pub lnd_config: lnd::LNDOptions,
-    pub lnurl_config: lnurl::LNURLOptions,
+    pub lnd_config: Option<lnd::LNDOptions>,
+    pub lnurl_config: Option<lnurl::LNURLOptions>,
     pub root_key: Vec<u8>,
 }
 
