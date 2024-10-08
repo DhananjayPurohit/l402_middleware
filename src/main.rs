@@ -125,9 +125,9 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnd_config: Some(lnd::LNDOptions {
                 address: env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env"),
                 macaroon_hex: Some(env::var("MACAROON_HEX").expect("MACAROON_HEX not found in .env")),
-                cert_file: None,
-                cert_hex: None,
+                cert_hex: Some(env::var("CERT_HEX").expect("MACAROON_HEX not found in .env")),
                 macaroon_file: None,
+                cert_file: None,
             }),
             lnurl_config: None,
             root_key: env::var("ROOT_KEY")

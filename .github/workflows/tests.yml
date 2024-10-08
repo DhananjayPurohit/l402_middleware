@@ -45,7 +45,18 @@ jobs:
           LN_CLIENT_TYPE: LNURL
           LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
 
+      - name: Extract Macaroon and Cert Hex
+        run: |
+          export MACAROON_HEX=$(docker exec lndnode xxd -p /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon)
+          export CERT_HEX=$(docker exec lndnode xxd -p /root/.lnd/tls.cert)
+          
+          echo "MACAROON_HEX=$MACAROON_HEX" >> $GITHUB_ENV
+          echo "CERT_HEX=$CERT_HEX" >> $GITHUB_ENV
+
       - name: Run tests for LND
         run: cargo test --verbose
         env:
           LN_CLIENT_TYPE: LND
+          LND_ADDRESS: lsat-middleware-rust-bitcoind-1:10009
+          MACAROON_HEX: ${{ env.MACAROON_HEX }}
+          CERT_HEX: ${{ env.CERT_HEX }}
