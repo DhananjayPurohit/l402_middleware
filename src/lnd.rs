@@ -52,9 +52,17 @@ impl lnclient::LNClient for LNDWrapper {
         let client = Arc::clone(&self.client);
         Box::pin(async move {
             let mut client = client.lock().await;
-            let response = client.lightning().add_invoice(invoice).await?;
-            println!("response {:?}", response);
-            Ok(response.into_inner())
+            match client.lightning().add_invoice(invoice).await {
+                Ok(response) => {
+                    println!("Response: {:?}", response);
+                    Ok(response.into_inner())
+                }
+                Err(e) => {
+                    // Print the error and return it
+                    eprintln!("Error adding invoice: {:?}", e);
+                    Err(Box::new(e))
+                }
+            }
         })
     }
 }
