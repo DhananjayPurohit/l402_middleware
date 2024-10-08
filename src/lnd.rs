@@ -53,6 +53,7 @@ impl lnclient::LNClient for LNDWrapper {
         Box::pin(async move {
             let mut client = client.lock().await;
             let response = client.lightning().add_invoice(invoice).await?;
+            println!("response {:?}", response);
             Ok(response.into_inner())
         })
     }
