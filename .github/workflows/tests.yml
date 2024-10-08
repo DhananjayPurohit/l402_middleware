@@ -45,21 +45,33 @@ jobs:
           LN_CLIENT_TYPE: LNURL
           LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
 
-      - name: Extract Macaroon and Cert Hex
+      - name: Extract Macaroon and Cert Paths
         run: |
-          export MACAROON_HEX=$(docker exec lndnode xxd -p /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon | tr -d '\n')
-          export CERT_HEX=$(docker exec lndnode xxd -p /root/.lnd/tls.cert | tr -d '\n')
+          # Define paths to the macaroon and certificate
+          MACAROON_PATH="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
+          CERT_PATH="/root/.lnd/tls.cert"
 
-          echo "Extracted MACAROON_HEX: $MACAROON_HEX"
-          echo "Extracted CERT_HEX: $CERT_HEX"
-          
-          echo "MACAROON_HEX=$MACAROON_HEX" >> $GITHUB_ENV
-          echo "CERT_HEX=$CERT_HEX" >> $GITHUB_ENV
+          # Check if files exist and export paths
+          if [ -f "$MACAROON_PATH" ]; then
+            echo "Extracted MACAROON_PATH: $MACAROON_PATH"
+            echo "MACAROON_PATH=$MACAROON_PATH" >> $GITHUB_ENV
+          else
+            echo "Error: Macaroon file not found at $MACAROON_PATH"
+            exit 1
+          fi
+
+          if [ -f "$CERT_PATH" ]; then
+            echo "Extracted CERT_PATH: $CERT_PATH"
+            echo "CERT_PATH=$CERT_PATH" >> $GITHUB_ENV
+          else
+            echo "Error: Certificate file not found at $CERT_PATH"
+            exit 1
+          fi
 
       - name: Run tests for LND
         run: cargo test --verbose
         env:
           LN_CLIENT_TYPE: LND
           LND_ADDRESS: lsat-middleware-rust-bitcoind-1:10009
-          MACAROON_HEX: ${{ env.MACAROON_HEX }}
-          CERT_HEX: ${{ env.CERT_HEX }}
+          MACAROON_FILE_PATH: ${{ env.MACAROON_PATH }}
+          CERT_FILE_PATH: ${{ env.CERT_PATH }}
