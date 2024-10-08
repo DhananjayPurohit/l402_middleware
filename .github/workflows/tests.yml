@@ -78,12 +78,20 @@ jobs:
             exit 1
           fi
 
-          docker logs lndnode
+          # Debugging: Check if the LND service is reachable
+          echo "Checking connectivity to LND..."
+          if curl -s -o /dev/null -w "%{http_code}" "http://lndnode:10009"; then
+            echo "LND service is reachable."
+          else
+            echo "Error: LND service is not reachable."
+            docker logs ${CONTAINER_NAME}  # Log container output for more details
+            exit 1
+          fi
 
       - name: Run tests for LND
         run: cargo test --verbose
         env:
           LN_CLIENT_TYPE: LND
-          LND_ADDRESS: lndnode:10009
+          LND_ADDRESS: http://lndnode:10009
           MACAROON_FILE_PATH: ${{ env.MACAROON_PATH }}
           CERT_FILE_PATH: ${{ env.CERT_PATH }}
