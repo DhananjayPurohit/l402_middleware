@@ -82,6 +82,6 @@ jobs:
         run: cargo test --verbose
         env:
           LN_CLIENT_TYPE: LND
-          LND_ADDRESS: lsat-middleware-rust-bitcoind-1:10009
+          LND_ADDRESS: lndnode:10009
           MACAROON_FILE_PATH: ${{ env.MACAROON_PATH }}
           CERT_FILE_PATH: ${{ env.CERT_PATH }}
