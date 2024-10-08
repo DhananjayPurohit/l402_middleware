@@ -78,6 +78,8 @@ jobs:
             exit 1
           fi
 
+          docker logs lndnode
+
       - name: Run tests for LND
         run: cargo test --verbose
         env:
