@@ -47,24 +47,34 @@ jobs:
 
       - name: Extract Macaroon and Cert Paths
         run: |
-          # Define paths to the macaroon and certificate
+          # Define the container name
+          CONTAINER_NAME="lndnode"
+
+          # Define paths to the macaroon and certificate in the container
           MACAROON_PATH="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
           CERT_PATH="/root/.lnd/tls.cert"
 
-          # Check if files exist and export paths
-          if [ -f "$MACAROON_PATH" ]; then
-            echo "Extracted MACAROON_PATH: $MACAROON_PATH"
-            echo "MACAROON_PATH=$MACAROON_PATH" >> $GITHUB_ENV
+          # Copy macaroon from the container to the workspace
+          docker cp ${CONTAINER_NAME}:${MACAROON_PATH} ./admin.macaroon
+
+          # Check if the macaroon was copied successfully
+          if [ -f "./admin.macaroon" ]; then
+            echo "Extracted MACAROON_PATH: ./admin.macaroon"
+            echo "MACAROON_PATH=./admin.macaroon" >> $GITHUB_ENV
           else
-            echo "Error: Macaroon file not found at $MACAROON_PATH"
+            echo "Error: Macaroon file not found after copying."
             exit 1
           fi
 
-          if [ -f "$CERT_PATH" ]; then
-            echo "Extracted CERT_PATH: $CERT_PATH"
-            echo "CERT_PATH=$CERT_PATH" >> $GITHUB_ENV
+          # Copy certificate from the container to the workspace
+          docker cp ${CONTAINER_NAME}:${CERT_PATH} ./tls.cert
+
+          # Check if the certificate was copied successfully
+          if [ -f "./tls.cert" ]; then
+            echo "Extracted CERT_PATH: ./tls.cert"
+            echo "CERT_PATH=./tls.cert" >> $GITHUB_ENV
           else
-            echo "Error: Certificate file not found at $CERT_PATH"
+            echo "Error: Certificate file not found after copying."
             exit 1
           fi
 
