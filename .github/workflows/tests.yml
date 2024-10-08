@@ -49,6 +49,9 @@ jobs:
         run: |
           export MACAROON_HEX=$(docker exec lndnode xxd -p /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon | tr -d '\n')
           export CERT_HEX=$(docker exec lndnode xxd -p /root/.lnd/tls.cert | tr -d '\n')
+
+          echo "Extracted MACAROON_HEX: $MACAROON_HEX"
+          echo "Extracted CERT_HEX: $CERT_HEX"
           
           echo "MACAROON_HEX=$MACAROON_HEX" >> $GITHUB_ENV
           echo "CERT_HEX=$CERT_HEX" >> $GITHUB_ENV
