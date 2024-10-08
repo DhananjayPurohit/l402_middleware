@@ -11,10 +11,8 @@ use crate::lnclient;
 #[derive(Debug, Clone)]
 pub struct LNDOptions {
     pub address: String,
-    pub cert_file: Option<String>,
-    pub cert_hex: Option<String>,
-    pub macaroon_file: Option<String>,
-    pub macaroon_hex: Option<String>,
+    pub macaroon_file: String,
+    pub cert_file: String,
 }
 
 pub struct LNDWrapper {
@@ -37,29 +35,8 @@ impl LNDWrapper {
             .parse()
             .map_err(|_| "Port is not a valid u32".to_string())?;
 
-        // Handle certificate and macaroon fields
-        let cert = if let Some(cert_hex) = lnd_options.cert_hex {
-            // Convert hex to PEM format
-            let decoded_cert = hex::decode(cert_hex)?;
-            String::from_utf8(decoded_cert)?
-        } else if let Some(cert_file) = lnd_options.cert_file {
-            // Read from certificate file
-            std::fs::read_to_string(cert_file)?
-        } else {
-            return Err("Either cert_file or cert_hex must be provided".into());
-        };
-
-        let macaroon = if let Some(macaroon_hex) = lnd_options.macaroon_hex {
-            // Convert hex to bytes
-            let decoded_macaroon = hex::decode(macaroon_hex)?;
-            base64::encode(decoded_macaroon)
-        } else if let Some(macaroon_file) = lnd_options.macaroon_file {
-            // Read macaroon file as bytes
-            let mac_bytes = std::fs::read(macaroon_file)?;
-            base64::encode(mac_bytes)
-        } else {
-            return Err("Either macaroon_file or macaroon_hex must be provided".into());
-        };
+        let cert = lnd_options.cert_file;
+        let macaroon = lnd_options.macaroon_file;
 
         let client = tonic_openssl_lnd::connect(host, port, cert, macaroon).await.unwrap();
 
