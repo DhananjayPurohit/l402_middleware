@@ -47,7 +47,6 @@ jobs:
 
       - name: Extract Macaroon and Cert Paths
         run: |
-          # Define the container name
           CONTAINER_NAME="lndnode"
 
           # Define paths to the macaroon and certificate in the container
@@ -57,8 +56,26 @@ jobs:
           # Copy macaroon from the container to the workspace
           docker cp ${CONTAINER_NAME}:${MACAROON_PATH} ./admin.macaroon
 
+          # Check if the macaroon was copied successfully
+          if [ -f "./admin.macaroon" ]; then
+            echo "Extracted MACAROON_PATH: ./admin.macaroon"
+            echo "MACAROON_PATH=./admin.macaroon" >> $GITHUB_ENV
+          else
+            echo "Error: Macaroon file not found after copying."
+            exit 1
+          fi
+
           # Copy certificate from the container to the workspace
           docker cp ${CONTAINER_NAME}:${CERT_PATH} ./tls.cert
+
+          # Check if the certificate was copied successfully
+          if [ -f "./tls.cert" ]; then
+            echo "Extracted CERT_PATH: ./tls.cert"
+            echo "CERT_PATH=./tls.cert" >> $GITHUB_ENV
+          else
+            echo "Error: Certificate file not found after copying."
+            exit 1
+          fi
 
       - name: Run tests for LND
         run: cargo test --verbose
