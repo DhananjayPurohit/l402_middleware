@@ -52,10 +52,8 @@ impl LsatMiddleware {
         let ln_client_conn = lnclient::LNClientConn{
             ln_client: self.ln_client.clone(),
         };
-        println!("generating invoice");
         match ln_client_conn.generate_invoice(ln_invoice).await {
             Ok((invoice, payment_hash)) => {
-                println!("invoice {:?}", invoice);
                 match get_macaroon_as_string(payment_hash, caveats, self.root_key.clone()) {
                     Ok(macaroon_string) => {
                         request.local_cache(|| lsat::LsatInfo {

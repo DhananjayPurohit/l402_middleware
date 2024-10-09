@@ -63,7 +63,6 @@ impl lnclient::LNClient for LNDWrapper {
                     return Err(boxed_error);
                 }
             };
-            println!("response {:?}", response);
             Ok(response.into_inner())
         })
     }

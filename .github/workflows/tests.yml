@@ -45,28 +45,8 @@ jobs:
           LN_CLIENT_TYPE: LNURL
           LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
 
-      - name: Verify Bitcoin daemon Service and create wallet
-        run: |
-          docker logs bitcoind
-          wallet_name="new_wallet"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
-          address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)
-          echo "New Wallet Address: $address"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$address"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress bcrt1pcngfxjdkf4r2h26k52dh5nunxg8m68uf4lkfhmfjvjj6agfkm5jqmftw4e 0.0001
-
-      - name: Verify LND node
-        run: |
-          docker logs lndnode
-          identity_pubkey_lndnode=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
-          echo "Pubkey: $identity_pubkey_lndnode"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -generate 5
-          docker logs lndnode
-
       - name: Extract Macaroon and Cert Paths
         run: |
-          docker logs lndnode
- 
           # Define the container name
           CONTAINER_NAME="lndnode"
 
@@ -77,35 +57,8 @@ jobs:
           # Copy macaroon from the container to the workspace
           docker cp ${CONTAINER_NAME}:${MACAROON_PATH} ./admin.macaroon
 
-          # Check if the macaroon was copied successfully
-          if [ -f "./admin.macaroon" ]; then
-            echo "Extracted MACAROON_PATH: ./admin.macaroon"
-            echo "MACAROON_PATH=./admin.macaroon" >> $GITHUB_ENV
-          else
-            echo "Error: Macaroon file not found after copying."
-            exit 1
-          fi
-
           # Copy certificate from the container to the workspace
           docker cp ${CONTAINER_NAME}:${CERT_PATH} ./tls.cert
-
-          # Check if the certificate was copied successfully
-          if [ -f "./tls.cert" ]; then
-            echo "Extracted CERT_PATH: ./tls.cert"
-            echo "CERT_PATH=./tls.cert" >> $GITHUB_ENV
-          else
-            echo "Error: Certificate file not found after copying."
-            exit 1
-          fi
-
-          # Debugging: Check if the LND service is reachable
-          echo "Checking connectivity to LND..."
-          if curl -s -o /dev/null -w "%{http_code}" "http://0.0.0.0:10009"; then
-            echo "LND service is reachable."
-          else
-            echo "Error: LND service is not reachable."
-            docker logs ${CONTAINER_NAME}  # Log container output for more details
-          fi
 
       - name: Run tests for LND
         run: cargo test --verbose
