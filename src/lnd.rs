@@ -38,20 +38,9 @@ impl LNDWrapper {
         let cert = lnd_options.cert_file;
         let macaroon = lnd_options.macaroon_file;
 
-        let client_result = tonic_openssl_lnd::connect(host, port, cert, macaroon).await;
+        let client = tonic_openssl_lnd::connect(host, port, cert, macaroon).await.unwrap();
 
-        match client_result {
-            Ok(client) => {
-                println!("Successfully connected to LND");
-                Ok(Arc::new(Mutex::new(LNDWrapper { client: Arc::new(Mutex::new(client)) })))
-            }
-            Err(ref e) => {
-                // Log the error
-                eprintln!("Failed to connect to LND: {:?}", e);
-                // You can either propagate the error or return a generic error
-                Ok(Arc::new(Mutex::new(LNDWrapper { client: Arc::new(Mutex::new(client_result.unwrap())) })))
-            }
-        }
+        Ok(Arc::new(Mutex::new(LNDWrapper { client: Arc::new(Mutex::new(client)) })))
     }
 }
 
