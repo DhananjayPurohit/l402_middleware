@@ -1,6 +1,9 @@
 # lsat-middleware-rs
 A middleware library for rust that uses [LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs.
 
+Check out the Go version here:
+https://github.com/getAlby/lsat-middleware
+
 The middleware:-
 
 1. Checks the preference of the user whether they need paid content or free content.
