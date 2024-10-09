@@ -55,7 +55,7 @@ pub struct DecodedPR {
 
 impl LnAddressUrlResJson {
     pub async fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
-        let lnurl_options = ln_client_config.lnurl_config.clone();
+        let lnurl_options = ln_client_config.lnurl_config.clone().unwrap();
         let (username, domain) = utils::parse_ln_address(lnurl_options.address)?;
     
         let ln_address_url = format!("https://{}/.well-known/lnurlp/{}", domain, username);

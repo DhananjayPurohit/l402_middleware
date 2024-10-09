@@ -11,10 +11,8 @@ use crate::lnclient;
 #[derive(Debug, Clone)]
 pub struct LNDOptions {
     pub address: String,
-    pub cert_file: Option<String>,
-    pub cert_hex: Option<String>,
-    pub macaroon_file: Option<String>,
-    pub macaroon_hex: Option<String>,
+    pub macaroon_file: String,
+    pub cert_file: String,
 }
 
 pub struct LNDWrapper {
@@ -25,7 +23,7 @@ impl LNDWrapper {
     pub async fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
-        let lnd_options = ln_client_config.lnd_config.clone();
+        let lnd_options = ln_client_config.lnd_config.clone().unwrap();
         // Parse the port from the LNDOptions address, assuming the format is "host:port"
         let address = lnd_options.address.clone();
         let parts: Vec<&str> = address.split(':').collect();
@@ -37,29 +35,8 @@ impl LNDWrapper {
             .parse()
             .map_err(|_| "Port is not a valid u32".to_string())?;
 
-        // Handle certificate and macaroon fields
-        let cert = if let Some(cert_hex) = lnd_options.cert_hex {
-            // Convert hex to PEM format
-            let decoded_cert = hex::decode(cert_hex)?;
-            String::from_utf8(decoded_cert)?
-        } else if let Some(cert_file) = lnd_options.cert_file {
-            // Read from certificate file
-            std::fs::read_to_string(cert_file)?
-        } else {
-            return Err("Either cert_file or cert_hex must be provided".into());
-        };
-
-        let macaroon = if let Some(macaroon_hex) = lnd_options.macaroon_hex {
-            // Convert hex to bytes
-            let decoded_macaroon = hex::decode(macaroon_hex)?;
-            base64::encode(decoded_macaroon)
-        } else if let Some(macaroon_file) = lnd_options.macaroon_file {
-            // Read macaroon file as bytes
-            let mac_bytes = std::fs::read(macaroon_file)?;
-            base64::encode(mac_bytes)
-        } else {
-            return Err("Either macaroon_file or macaroon_hex must be provided".into());
-        };
+        let cert = lnd_options.cert_file;
+        let macaroon = lnd_options.macaroon_file;
 
         let client = tonic_openssl_lnd::connect(host, port, cert, macaroon).await.unwrap();
 
@@ -75,7 +52,17 @@ impl lnclient::LNClient for LNDWrapper {
         let client = Arc::clone(&self.client);
         Box::pin(async move {
             let mut client = client.lock().await;
-            let response = client.lightning().add_invoice(invoice).await?;
+            let response = match client.lightning().add_invoice(invoice).await {
+                Ok(res) => {
+                    println!("response {:?}", res);
+                    res
+                }
+                Err(e) => {
+                    eprintln!("Error adding invoice: {:?}", e);
+                    let boxed_error: Box<dyn Error + Send + Sync> = Box::new(e);
+                    return Err(boxed_error);
+                }
+            };
             Ok(response.into_inner())
         })
     }

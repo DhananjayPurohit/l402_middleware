@@ -104,22 +104,36 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
      // Load environment variables from .env file
     dotenv().ok();
 
-    let ln_client_config = lnclient::LNClientConfig {
-        ln_client_type: env::var("LN_CLIENT_TYPE").expect("LN_CLIENT_TYPE not found in .env"),
-        lnd_config: lnd::LNDOptions {
-            address: env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env"),
-            macaroon_hex: Some(env::var("MACAROON_HEX").expect("MACAROON_HEX not found in .env")),
-            cert_file: None,
-            cert_hex: None,
-            macaroon_file: None,
+    // Get LN_CLIENT_TYPE from the environment
+    let ln_client_type = env::var("LN_CLIENT_TYPE").expect("LN_CLIENT_TYPE not found in .env");
+
+    // Initialize LNClientConfig based on LN_CLIENT_TYPE
+    let ln_client_config = match ln_client_type.as_str() {
+        "LNURL" => lnclient::LNClientConfig {
+            ln_client_type,
+            lnd_config: None,
+            lnurl_config: Some(lnurl::LNURLOptions {
+                address: env::var("LNURL_ADDRESS").expect("LNURL_ADDRESS not found in .env"),
+            }),
+            root_key: env::var("ROOT_KEY")
+                .expect("ROOT_KEY not found in .env")
+                .as_bytes()
+                .to_vec(),
         },
-        lnurl_config: lnurl::LNURLOptions {
-            address: env::var("LNURL_ADDRESS").expect("LNURL_ADDRESS not found in .env"),
+        "LND" => lnclient::LNClientConfig {
+            ln_client_type,
+            lnd_config: Some(lnd::LNDOptions {
+                address: env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env"),
+                macaroon_file: env::var("MACAROON_FILE_PATH").expect("MACAROON_FILE_PATH not found in .env"),
+                cert_file: env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env"),
+            }),
+            lnurl_config: None,
+            root_key: env::var("ROOT_KEY")
+                .expect("ROOT_KEY not found in .env")
+                .as_bytes()
+                .to_vec(),
         },
-        root_key: env::var("ROOT_KEY")
-            .expect("ROOT_KEY not found in .env")
-            .as_bytes()
-            .to_vec(),
+        _ => panic!("Invalid LN_CLIENT_TYPE. Expected 'LNURL' or 'LND'."),
     };
 
     // Initialize Fiat Rate Config
