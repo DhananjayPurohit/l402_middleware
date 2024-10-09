@@ -13,7 +13,7 @@ The middleware:-
 ## Installation
 
 Add the crate to your `Cargo.toml`:
-```
+```toml
 [dependencies]
 lsat-middleware-rs = { git = "https://github.com/DhananjayPurohit/lsat-middleware-rs" }
 ```
@@ -21,7 +21,7 @@ lsat-middleware-rs = { git = "https://github.com/DhananjayPurohit/lsat-middlewar
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
 
 ## Example
-```
+```rust
 #[macro_use] extern crate rocket;
 
 use rocket::serde::json::Json;
