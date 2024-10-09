@@ -7,16 +7,15 @@ edition = "2021"
 
 [dependencies]
 base64 = "0.21.5"
-bitcoin = "0.32.2"
+bitcoin = "0.32.3"
 dotenv = "0.15.0"
 hex = "0.4.3"
 lightning = "0.0.124"
 lightning-invoice = "0.32.0"
 macaroon = "0.3.0"
-rand = "0.8.5"
 reqwest = "0.12.7"
 rocket = { version = "0.5.0-rc.3", features = ["json"] }
-serde = "1.0.152"
+serde = "1.0.210"
 tokio = "1.40.0"
 tonic_openssl_lnd = "0.2.0"
 x509-parser = "0.16.0"
