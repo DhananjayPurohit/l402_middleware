@@ -6,7 +6,7 @@ readme = "README.md"
 documentation = "https://docs.rs/l402_middleware"
 repository = "https://github.com/DhananjayPurohit/l402_middleware"
 homepage = "https://github.com/DhananjayPurohit/l402_middleware"
-licence = "MIT"
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
