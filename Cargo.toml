@@ -1,6 +1,12 @@
 [package]
 name = "l402_middleware"
 version = "0.1.0"
+description = "A middleware library for rust that provides handler functions to accept microtransactions before serving ad-free content or any paid APIs."
+readme = "README.md"
+documentation = "https://docs.rs/l402_middleware"
+repository = "https://github.com/DhananjayPurohit/l402_middleware"
+homepage = "https://github.com/DhananjayPurohit/l402_middleware"
+licence = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
