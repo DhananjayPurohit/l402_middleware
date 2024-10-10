@@ -3,20 +3,20 @@ use macaroon::{Macaroon, Verifier, MacaroonKey};
 use rocket::{request, Request};
 use hex;
 
-use crate::lsat;
+use crate::l402;
 
-pub const LSAT_TYPE_FREE: &str = "FREE";
-pub const LSAT_TYPE_PAYMENT_REQUIRED: &str = "PAYMENT REQUIRED";
-pub const LSAT_TYPE_PAID: &str = "PAID";
-pub const LSAT_TYPE_ERROR: &str = "ERROR";
-pub const LSAT_HEADER: &str = "LSAT";
-pub const LSAT_HEADER_NAME: &str = "Accept-Authenticate";
-pub const LSAT_AUTHENTICATE_HEADER_NAME: &str = "WWW-Authenticate";
-pub const LSAT_AUTHORIZATION_HEADER_NAME: &str = "Authorization";
+pub const L402_TYPE_FREE: &str = "FREE";
+pub const L402_TYPE_PAYMENT_REQUIRED: &str = "PAYMENT REQUIRED";
+pub const L402_TYPE_PAID: &str = "PAID";
+pub const L402_TYPE_ERROR: &str = "ERROR";
+pub const L402_HEADER: &str = "L402";
+pub const L402_HEADER_NAME: &str = "Accept-Authenticate";
+pub const L402_AUTHENTICATE_HEADER_NAME: &str = "WWW-Authenticate";
+pub const L402_AUTHORIZATION_HEADER_NAME: &str = "Authorization";
 
 #[derive(Clone)]
-pub struct LsatInfo {
-	pub	lsat_type: String,
+pub struct L402Info {
+	pub	l402_type: String,
 	pub preimage: Option<PaymentPreimage>,
 	pub payment_hash: Option<PaymentHash>,
 	pub error: Option<String>,
@@ -24,26 +24,26 @@ pub struct LsatInfo {
 }
 
 #[rocket::async_trait]
-impl<'r> request::FromRequest<'r> for LsatInfo {
+impl<'r> request::FromRequest<'r> for L402Info {
     type Error = &'static str;
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        // Retrieve LsatInfo from the local cache
-        let lsat_info = request.local_cache::<LsatInfo, _>(|| {
-            LsatInfo {
-                lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
-                error: Some("No LSAT header present".to_string()),
+        // Retrieve L402Info from the local cache
+        let l402_info = request.local_cache::<L402Info, _>(|| {
+            L402Info {
+                l402_type: l402::L402_TYPE_ERROR.to_string(),
+                error: Some("No L402 header present".to_string()),
                 preimage: None,
                 payment_hash: None,
                 auth_header: None,
             }
         });
 
-        request::Outcome::Success(lsat_info.clone())
+        request::Outcome::Success(l402_info.clone())
     }
 }
 
-pub fn verify_lsat(
+pub fn verify_l402(
     mac: &Macaroon,
     caveats: Vec<String>,
     root_key: Vec<u8>,

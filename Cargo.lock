@@ -1003,6 +1003,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "l402_middleware"
+version = "0.1.0"
+dependencies = [
+ "base64 0.21.7",
+ "bitcoin",
+ "dotenv",
+ "hex",
+ "lightning",
+ "lightning-invoice",
+ "macaroon",
+ "reqwest",
+ "rocket",
+ "serde",
+ "tokio",
+ "tonic_openssl_lnd",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1110,24 +1128,6 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "lsat_middleware"
-version = "0.1.0"
-dependencies = [
- "base64 0.21.7",
- "bitcoin",
- "dotenv",
- "hex",
- "lightning",
- "lightning-invoice",
- "macaroon",
- "reqwest",
- "rocket",
- "serde",
- "tokio",
- "tonic_openssl_lnd",
 ]
 
 [[package]]

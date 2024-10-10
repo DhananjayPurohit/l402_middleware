@@ -2,7 +2,7 @@ use lightning::ln::{PaymentPreimage};
 use macaroon::Macaroon;
 use hex;
 
-pub fn parse_lsat_header(auth_field: &str) -> Result<(Macaroon, PaymentPreimage), String> {
+pub fn parse_l402_header(auth_field: &str) -> Result<(Macaroon, PaymentPreimage), String> {
     // Check if the authorization field is empty
     if auth_field.is_empty() {
       return Err(format!("Authorization field not present"));
@@ -10,14 +10,14 @@ pub fn parse_lsat_header(auth_field: &str) -> Result<(Macaroon, PaymentPreimage)
   
     let auth_field = auth_field.trim();
     if auth_field.is_empty() {
-      return Err(format!("LSAT Header is not present"));
+      return Err(format!("L402 Header is not present"));
     }
   
-    let token = auth_field.trim_start_matches("LSAT ");
+    let token = auth_field.trim_start_matches("L402 ");
     let splitted: Vec<&str> = token.split(':').map(|s| s.trim()).collect();
   
     if splitted.len() != 2 {
-      return Err(format!("LSAT does not have the right format: {}", auth_field));
+      return Err(format!("L402 does not have the right format: {}", auth_field));
     }
   
     let macaroon_string = splitted[0].to_string();
