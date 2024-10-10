@@ -9,13 +9,7 @@ use std::env;
 use std::sync::Arc;
 use reqwest::Client;
 
-mod l402;
-mod middleware;
-mod utils;
-mod macaroon_util;
-mod lnclient;
-mod lnurl;
-mod lnd;
+use l402_middleware::{l402, lnclient, lnd, lnurl, macaroon_util, middleware, utils};
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;

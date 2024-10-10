@@ -1,4 +1,4 @@
-# l402-middleware-rs
+# l402_middleware
 A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs.
 
 Check out the Go version here:
@@ -13,12 +13,21 @@ The middleware:-
 ![186736015-f956dfe1-cba0-4dc3-9755-9d22cb1c7e77](https://github.com/user-attachments/assets/afc099e2-d0b8-4344-9665-17a81f6907bc)
 
 
+## L402 Header Specifications
+
+| **Header**            | **Description**                                                                                            | **Usage**                                                                                                  | **Example**                                                                                                                                   |
+|-----------------------|------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| **Accept-Authenticate** | Sent by the client to show interest in using L402 for authentication. | Used when the client wants to explore authentication options under L402. | `Accept-Authenticate: L402` |
+| **WWW-Authenticate**   | Sent by the server to request L402 authentication, providing a macaroon and a payment invoice.             | Used when the client must pay or authenticate to access a resource.                                         | `WWW-Authenticate: L402 macaroon="MDAxM...", invoice="lnbc1..."`                                                                              |
+| **Authorization**      | Sent by the client to provide the macaroon and preimage (proof of payment) to access the resource.         | Used by the client after payment or authentication to prove access rights.                                  | `Authorization: L402 <macaroon>:<preimage>`                                                                                                  |
+
+
 ## Installation
 
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402-middleware-rs = { git = "https://github.com/DhananjayPurohit/l402-middleware-rs" }
+l402_middleware = { git = "https://github.com/DhananjayPurohit/l402_middleware" }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
@@ -35,14 +44,7 @@ use dotenv::dotenv;
 use std::env;
 use std::sync::Arc;
 use reqwest::Client;
-
-mod lsat;
-mod middleware;
-mod utils;
-mod macaroon_util;
-mod lnclient;
-mod lnurl;
-mod lnd;
+use l402_middleware::{l402, middleware, utils, macaroon_util, lnclient, lnurl, lnd};
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -56,8 +58,9 @@ pub struct FiatRateConfig {
 }
 
 impl FiatRateConfig {
+     // Converts fiat amount to BTC equivalent. Customization possible for different API endpoints.
     pub async fn fiat_to_btc_amount_func(&self) -> i64 {
-        // If amount is invalid, return the minimum sats.
+        // Return the minimum sats if the amount is invalid.
         if self.amount <= 0.0 {
             return MIN_SATS_TO_BE_PAID;
         }
@@ -81,6 +84,7 @@ impl FiatRateConfig {
     }
 }
 
+// Function to add caveats, can customize it based on authentication needs
 fn path_caveat(req: &Request<'_>) -> Vec<String> {
     vec![
         format!("RequestPath = {}", req.uri().path()),
@@ -106,14 +110,14 @@ fn free() -> (Status, Json<Response>) {
 }
 
 #[get("/protected")]
-fn protected(lsat_info: lsat::LsatInfo) -> (Status, Json<Response>) {
-    let (status, message) = match lsat_info.lsat_type.as_str() {
-        lsat::LSAT_TYPE_FREE => (Status::Ok, String::from("Free content")),
-        lsat::LSAT_TYPE_PAYMENT_REQUIRED => (Status::PaymentRequired, String::from("Pay the invoice attached in response header")),
-        lsat::LSAT_TYPE_PAID => (Status::Ok, String::from("Protected content")),
-        lsat::LSAT_TYPE_ERROR => (
+fn protected(l402_info: l402::L402Info) -> (Status, Json<Response>) {
+    let (status, message) = match l402_info.l402_type.as_str() {
+        l402::L402_TYPE_FREE => (Status::Ok, String::from("Free content")),
+        l402::L402_TYPE_PAYMENT_REQUIRED => (Status::PaymentRequired, String::from("Pay the invoice attached in response header")),
+        l402::L402_TYPE_PAID => (Status::Ok, String::from("Protected content")),
+        l402::L402_TYPE_ERROR => (
             Status::InternalServerError,
-            lsat_info.error.clone().unwrap_or_else(|| String::from("An error occurred")),
+            l402_info.error.clone().unwrap_or_else(|| String::from("An error occurred")),
         ),
         _ => (Status::InternalServerError, String::from("Unknown type")),
     };
@@ -169,7 +173,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
         amount: 0.01,
     });
 
-    let lsat_middleware = middleware::LsatMiddleware::new_lsat_middleware(
+    let l402_middleware = middleware::L402Middleware::new_l402_middleware(
         ln_client_config.clone(),
         Arc::new(move |_req: &Request<'_>| {
             let fiat_rate_config = Arc::clone(&fiat_rate_config);
@@ -183,7 +187,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
     ).await.unwrap();
 
     rocket::build()
-        .attach(lsat_middleware)
+        .attach(l402_middleware)
         .mount("/", routes![free, protected])
 }
 ```
