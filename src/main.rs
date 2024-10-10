@@ -9,7 +9,7 @@ use std::env;
 use std::sync::Arc;
 use reqwest::Client;
 
-mod lsat;
+mod l402;
 mod middleware;
 mod utils;
 mod macaroon_util;
@@ -29,8 +29,9 @@ pub struct FiatRateConfig {
 }
 
 impl FiatRateConfig {
+     // Converts fiat amount to BTC equivalent. Customization possible for different API endpoints.
     pub async fn fiat_to_btc_amount_func(&self) -> i64 {
-        // If amount is invalid, return the minimum sats.
+        // Return the minimum sats if the amount is invalid.
         if self.amount <= 0.0 {
             return MIN_SATS_TO_BE_PAID;
         }
@@ -54,6 +55,7 @@ impl FiatRateConfig {
     }
 }
 
+// Function to add caveats, can customize it based on authentication needs
 fn path_caveat(req: &Request<'_>) -> Vec<String> {
     vec![
         format!("RequestPath = {}", req.uri().path()),
@@ -79,14 +81,14 @@ fn free() -> (Status, Json<Response>) {
 }
 
 #[get("/protected")]
-fn protected(lsat_info: lsat::LsatInfo) -> (Status, Json<Response>) {
-    let (status, message) = match lsat_info.lsat_type.as_str() {
-        lsat::LSAT_TYPE_FREE => (Status::Ok, String::from("Free content")),
-        lsat::LSAT_TYPE_PAYMENT_REQUIRED => (Status::PaymentRequired, String::from("Pay the invoice attached in response header")),
-        lsat::LSAT_TYPE_PAID => (Status::Ok, String::from("Protected content")),
-        lsat::LSAT_TYPE_ERROR => (
+fn protected(l402_info: l402::L402Info) -> (Status, Json<Response>) {
+    let (status, message) = match l402_info.l402_type.as_str() {
+        l402::L402_TYPE_FREE => (Status::Ok, String::from("Free content")),
+        l402::L402_TYPE_PAYMENT_REQUIRED => (Status::PaymentRequired, String::from("Pay the invoice attached in response header")),
+        l402::L402_TYPE_PAID => (Status::Ok, String::from("Protected content")),
+        l402::L402_TYPE_ERROR => (
             Status::InternalServerError,
-            lsat_info.error.clone().unwrap_or_else(|| String::from("An error occurred")),
+            l402_info.error.clone().unwrap_or_else(|| String::from("An error occurred")),
         ),
         _ => (Status::InternalServerError, String::from("Unknown type")),
     };
@@ -142,7 +144,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
         amount: 0.01,
     });
 
-    let lsat_middleware = middleware::LsatMiddleware::new_lsat_middleware(
+    let l402_middleware = middleware::L402Middleware::new_l402_middleware(
         ln_client_config.clone(),
         Arc::new(move |_req: &Request<'_>| {
             let fiat_rate_config = Arc::clone(&fiat_rate_config);
@@ -156,7 +158,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
     ).await.unwrap();
 
     rocket::build()
-        .attach(lsat_middleware)
+        .attach(l402_middleware)
         .mount("/", routes![free, protected])
 }
 
@@ -168,7 +170,7 @@ mod tests {
     use super::rocket;
     use lightning::ln::PaymentHash;
 
-    use crate::lsat;
+    use crate::l402;
     use crate::utils;
 
     const TEST_MACAROON_VALID: &str = "MDAxMmxvY2F0aW9uIExTQVQKMDAzMGlkZW50aWZpZXIgjWsDO3viVp1lHXWoaN1CiUFeRdn8Z9Zl1AUIfJHKoCkKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSBZJ8RYr2biQ9CRoCxMcmWBObW7L7nS1bvFduQXRIQcJwo=";
@@ -200,20 +202,20 @@ mod tests {
 
         let json: Value = response.into_json().await.expect("valid JSON response");
         assert_eq!(json["code"], 500);
-        assert_eq!(json["message"], "No LSAT header present");
+        assert_eq!(json["message"], "No L402 header present");
     }
 
     #[rocket::async_test]
     async fn test_protected_route_payment_required() {
         let client = Client::tracked(rocket().await).await.expect("valid rocket instance");
         let response = client.get("/protected")
-                        .header(Header::new(lsat::LSAT_HEADER_NAME, lsat::LSAT_HEADER))
+                        .header(Header::new(l402::L402_HEADER_NAME, l402::L402_HEADER))
                         .dispatch().await;
         
         assert_eq!(response.status(), Status::PaymentRequired);
 
-        let www_authenticate_header = response.headers().get_one(lsat::LSAT_AUTHENTICATE_HEADER_NAME).unwrap();
-        assert!(www_authenticate_header.starts_with("LSAT macaroon="));
+        let www_authenticate_header = response.headers().get_one(l402::L402_AUTHENTICATE_HEADER_NAME).unwrap();
+        assert!(www_authenticate_header.starts_with("L402 macaroon="));
         assert!(www_authenticate_header.contains("invoice="));
 
         let json: Value = response.into_json().await.expect("valid JSON response");
@@ -222,10 +224,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_protected_route_with_valid_lsat() {
+    async fn test_protected_route_with_valid_l402() {
         let client = Client::tracked(rocket().await).await.expect("valid rocket instance");
         let response = client.get("/protected")
-                        .header(Header::new(lsat::LSAT_AUTHORIZATION_HEADER_NAME, format!("LSAT {}:{}", TEST_MACAROON_VALID, TEST_PREIMAGE_VALID)))
+                        .header(Header::new(l402::L402_AUTHORIZATION_HEADER_NAME, format!("L402 {}:{}", TEST_MACAROON_VALID, TEST_PREIMAGE_VALID)))
                         .dispatch().await;
 
         assert_eq!(response.status(), Status::Ok);
@@ -239,7 +241,7 @@ mod tests {
     async fn test_protected_route_with_invalid_preimage() {
         let client = Client::tracked(rocket().await).await.expect("valid rocket instance");
         let response = client.get("/protected")
-                        .header(Header::new(lsat::LSAT_AUTHORIZATION_HEADER_NAME, format!("LSAT {}:{}", TEST_MACAROON_VALID, TEST_PREIMAGE_INVALID)))
+                        .header(Header::new(l402::L402_AUTHORIZATION_HEADER_NAME, format!("L402 {}:{}", TEST_MACAROON_VALID, TEST_PREIMAGE_INVALID)))
                         .dispatch().await;
 
         assert_eq!(response.status(), Status::InternalServerError);
@@ -260,7 +262,7 @@ mod tests {
     async fn test_protected_route_with_macaroon_without_caveats() {
         let client = Client::tracked(rocket().await).await.expect("valid rocket instance");
         let response = client.get("/protected")
-                        .header(Header::new(lsat::LSAT_AUTHORIZATION_HEADER_NAME, format!("LSAT {}:{}", TEST_MACAROON_WITHOUT_CAVEATS, TEST_MACAROON_WITHOUT_CAVEATS_PREIMAGE)))
+                        .header(Header::new(l402::L402_AUTHORIZATION_HEADER_NAME, format!("L402 {}:{}", TEST_MACAROON_WITHOUT_CAVEATS, TEST_MACAROON_WITHOUT_CAVEATS_PREIMAGE)))
                         .dispatch().await;
 
         assert_eq!(response.status(), Status::InternalServerError);

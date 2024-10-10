@@ -1,5 +1,5 @@
-# lsat-middleware-rs
-A middleware library for rust that uses [LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs.
+# l402-middleware-rs
+A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs.
 
 Check out the Go version here:
 https://github.com/getAlby/lsat-middleware
@@ -7,8 +7,8 @@ https://github.com/getAlby/lsat-middleware
 The middleware:-
 
 1. Checks the preference of the user whether they need paid content or free content.
-2. Verify the LSAT before serving paid content.
-3. Send macaroon and invoice if the user prefers paid content and fails to present a valid LSAT.
+2. Verify the L402 before serving paid content.
+3. Send macaroon and invoice if the user prefers paid content and fails to present a valid L402.
 
 ![186736015-f956dfe1-cba0-4dc3-9755-9d22cb1c7e77](https://github.com/user-attachments/assets/afc099e2-d0b8-4344-9665-17a81f6907bc)
 
@@ -18,7 +18,7 @@ The middleware:-
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-lsat-middleware-rs = { git = "https://github.com/DhananjayPurohit/lsat-middleware-rs" }
+l402-middleware-rs = { git = "https://github.com/DhananjayPurohit/l402-middleware-rs" }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.

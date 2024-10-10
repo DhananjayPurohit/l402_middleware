@@ -10,7 +10,7 @@ use std::future::Future;
 use tokio::sync::Mutex;
 
 use crate::utils;
-use crate::lsat;
+use crate::l402;
 use crate::lnclient;
 use crate::macaroon_util::get_macaroon_as_string;
 
@@ -18,24 +18,24 @@ type AmountFunc = Arc<dyn Fn(&Request<'_>) -> Pin<Box<dyn Future<Output = i64> +
 
 type CaveatFunc = Arc<dyn Fn(&Request<'_>) -> Vec<String> + Send + Sync>;
 
-pub struct LsatMiddleware {
+pub struct L402Middleware {
     pub amount_func: AmountFunc,
     pub caveat_func: CaveatFunc,
     pub ln_client: Arc<Mutex<dyn lnclient::LNClient>>,
     pub root_key: Vec<u8>,
 }
 
-impl LsatMiddleware {
-    pub async fn new_lsat_middleware(
+impl L402Middleware {
+    pub async fn new_l402_middleware(
         ln_client_config: lnclient::LNClientConfig,
         amount_func: AmountFunc,
         caveat_func: CaveatFunc,
-    ) -> Result<LsatMiddleware, Box<dyn Error + Send + Sync>> {
+    ) -> Result<L402Middleware, Box<dyn Error + Send + Sync>> {
         // Initialize the LNClient using the configuration
         let ln_client = lnclient::LNClientConn::init(&ln_client_config).await?;
     
-        // Create and return the LsatMiddleware instance
-        Ok(LsatMiddleware {
+        // Create and return the L402Middleware instance
+        Ok(L402Middleware {
             amount_func: amount_func,
             caveat_func: caveat_func,
             ln_client,
@@ -43,10 +43,10 @@ impl LsatMiddleware {
         })
     }
 
-    pub async fn set_lsat_header(&self, request: &mut Request<'_>, caveats: Vec<String>) {
+    pub async fn set_l402_header(&self, request: &mut Request<'_>, caveats: Vec<String>) {
         let ln_invoice = lnrpc::Invoice {
             value: (self.amount_func)(request).await,
-            memo: "LSAT".to_string(),
+            memo: l402::L402_HEADER.to_string(),
             ..Default::default()
         };
         let ln_client_conn = lnclient::LNClientConn{
@@ -56,17 +56,17 @@ impl LsatMiddleware {
             Ok((invoice, payment_hash)) => {
                 match get_macaroon_as_string(payment_hash, caveats, self.root_key.clone()) {
                     Ok(macaroon_string) => {
-                        request.local_cache(|| lsat::LsatInfo {
-                            lsat_type: lsat::LSAT_TYPE_PAYMENT_REQUIRED.to_string(),
+                        request.local_cache(|| l402::L402Info {
+                            l402_type: l402::L402_TYPE_PAYMENT_REQUIRED.to_string(),
                             preimage: None,
                             payment_hash: None,
                             error: None,
-                            auth_header: format!("LSAT macaroon={}, invoice={}", macaroon_string, invoice).into(),
+                            auth_header: format!("L402 macaroon={}, invoice={}", macaroon_string, invoice).into(),
                         });
                     },
                     Err(error) => {
-                        request.local_cache(|| lsat::LsatInfo {
-                            lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
+                        request.local_cache(|| l402::L402Info {
+                            l402_type: l402::L402_TYPE_ERROR.to_string(),
                             error: Some(error.to_string()),
                             preimage: None,
                             payment_hash: None,
@@ -76,8 +76,8 @@ impl LsatMiddleware {
                 }
             },
             Err(error) => {
-                request.local_cache(|| lsat::LsatInfo {
-                    lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
+                request.local_cache(|| l402::L402Info {
+                    l402_type: l402::L402_TYPE_ERROR.to_string(),
                     error: Some(error.to_string()),
                     preimage: None,
                     payment_hash: None,
@@ -89,10 +89,10 @@ impl LsatMiddleware {
 }
 
 #[rocket::async_trait]
-impl Fairing for LsatMiddleware {
+impl Fairing for L402Middleware {
     fn info(&self) -> Info {
         Info {
-            name: "Lsat Middleware",
+            name: "L402 Middleware",
             kind: Kind::Request | Kind::Response,
         }
     }
@@ -100,14 +100,14 @@ impl Fairing for LsatMiddleware {
     async fn on_request(&self, request: &mut Request<'_>, _: &mut Data<'_>) {
         let caveat_func = Arc::clone(&self.caveat_func);
         let caveats = caveat_func(request);
-        if let Some(auth_field) = request.headers().get_one(lsat::LSAT_AUTHORIZATION_HEADER_NAME) {
-            match utils::parse_lsat_header(auth_field) {
+        if let Some(auth_field) = request.headers().get_one(l402::L402_AUTHORIZATION_HEADER_NAME) {
+            match utils::parse_l402_header(auth_field) {
                 Ok((mac, preimage)) => {
-                    match lsat::verify_lsat(&mac, caveats, self.root_key.clone(), preimage) {
+                    match l402::verify_l402(&mac, caveats, self.root_key.clone(), preimage) {
                         Ok(_) => {
                             let payment_hash: PaymentHash = PaymentHash::from(preimage);
-                            request.local_cache(|| lsat::LsatInfo {
-                                lsat_type: lsat::LSAT_TYPE_PAID.to_string(),
+                            request.local_cache(|| l402::L402Info {
+                                l402_type: l402::L402_TYPE_PAID.to_string(),
                                 preimage: Some(preimage),
                                 payment_hash: Some(payment_hash),
                                 error: None,
@@ -115,24 +115,24 @@ impl Fairing for LsatMiddleware {
                             });
                         },
                         Err(error) => {
-                            request.local_cache(|| lsat::LsatInfo {
-                                lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
+                            request.local_cache(|| l402::L402Info {
+                                l402_type: l402::L402_TYPE_ERROR.to_string(),
                                 error: Some(error.to_string()),
                                 preimage: None,
                                 payment_hash: None,
                                 auth_header: None,
                             });
-                            println!("Error verifying LSAT: {}", error);
+                            println!("Error verifying L402: {}", error);
                         }
                     }
                 },
                 Err(error) => {
-                    if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
-                        if accept_lsat_field.contains(lsat::LSAT_HEADER) {
-                            LsatMiddleware::set_lsat_header(self, request, caveats).await;
+                    if let Some(accept_l402_field) = request.headers().get_one(l402::L402_HEADER_NAME) {
+                        if accept_l402_field.contains(l402::L402_HEADER) {
+                            L402Middleware::set_l402_header(self, request, caveats).await;
                         } else {
-                            request.local_cache(|| lsat::LsatInfo {
-                                lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
+                            request.local_cache(|| l402::L402Info {
+                                l402_type: l402::L402_TYPE_FREE.to_string(),
                                 preimage: None,
                                 payment_hash: None,
                                 error: None,
@@ -140,31 +140,31 @@ impl Fairing for LsatMiddleware {
                             });
                         }
                     } else {
-                        request.local_cache(|| lsat::LsatInfo {
-                            lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
+                        request.local_cache(|| l402::L402Info {
+                            l402_type: l402::L402_TYPE_ERROR.to_string(),
                             error: Some(error.to_string()),
                             preimage: None,
                             payment_hash: None,
                             auth_header: None,
                         });
-                        println!("Error parsing LSAT: {}", error);
+                        println!("Error parsing L402: {}", error);
                     }
                 },
             }
         } else {
-            if let Some(accept_lsat_field) = request.headers().get_one(lsat::LSAT_HEADER_NAME) {
-                if accept_lsat_field.contains(lsat::LSAT_HEADER) {
-                    LsatMiddleware::set_lsat_header(self, request, caveats).await;
-                    request.local_cache(|| lsat::LsatInfo {
-                        lsat_type: lsat::LSAT_TYPE_PAYMENT_REQUIRED.to_string(),
+            if let Some(accept_l402_field) = request.headers().get_one(l402::L402_HEADER_NAME) {
+                if accept_l402_field.contains(l402::L402_HEADER) {
+                    L402Middleware::set_l402_header(self, request, caveats).await;
+                    request.local_cache(|| l402::L402Info {
+                        l402_type: l402::L402_TYPE_PAYMENT_REQUIRED.to_string(),
                         preimage: None,
                         payment_hash: None,
                         error: None,
                         auth_header: None,
                     });
                 } else {
-                    request.local_cache(|| lsat::LsatInfo {
-                        lsat_type: lsat::LSAT_TYPE_FREE.to_string(),
+                    request.local_cache(|| l402::L402Info {
+                        l402_type: l402::L402_TYPE_FREE.to_string(),
                         preimage: None,
                         payment_hash: None,
                         error: None,
@@ -176,11 +176,11 @@ impl Fairing for LsatMiddleware {
     }
 
     async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
-        // Retrieve LsatInfo from the local cache
-        let lsat_info = request.local_cache::<lsat::LsatInfo, _>(|| {
-            lsat::LsatInfo {
-                lsat_type: lsat::LSAT_TYPE_ERROR.to_string(),
-                error: Some("No LSAT header present".to_string()),
+        // Retrieve L402Info from the local cache
+        let l402_info = request.local_cache::<l402::L402Info, _>(|| {
+            l402::L402Info {
+                l402_type: l402::L402_TYPE_ERROR.to_string(),
+                error: Some("No L402 header present".to_string()),
                 preimage: None,
                 payment_hash: None,
                 auth_header: None,
@@ -188,8 +188,8 @@ impl Fairing for LsatMiddleware {
         });
 
         // Check if the auth header is set and add it to the response
-        if let Some(header_value) = &lsat_info.auth_header {
-            response.set_header(Header::new(lsat::LSAT_AUTHENTICATE_HEADER_NAME, header_value));
+        if let Some(header_value) = &l402_info.auth_header {
+            response.set_header(Header::new(l402::L402_AUTHENTICATE_HEADER_NAME, header_value));
         }
     }
 }
