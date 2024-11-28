@@ -187,6 +187,24 @@ mod tests {
         assert_eq!(json["message"], "Free content");
     }
 
+    #[cfg(feature = "no-accept-authenticate-required")]
+    #[rocket::async_test]
+    async fn test_protected_route_free_content() {
+        let client = Client::tracked(rocket().await).await.expect("valid rocket instance");
+        let response = client.get("/protected").dispatch().await;
+        
+        assert_eq!(response.status(), Status::PaymentRequired);
+
+        let www_authenticate_header = response.headers().get_one(l402::L402_AUTHENTICATE_HEADER_NAME).unwrap();
+        assert!(www_authenticate_header.starts_with("L402 macaroon="));
+        assert!(www_authenticate_header.contains("invoice="));
+
+        let json: Value = response.into_json().await.expect("valid JSON response");
+        assert_eq!(json["code"], 402);
+        assert_eq!(json["message"], "Pay the invoice attached in response header");
+    }
+
+    #[cfg(not(feature = "no-accept-authenticate-required"))]
     #[rocket::async_test]
     async fn test_protected_route_free_content() {
         let client = Client::tracked(rocket().await).await.expect("valid rocket instance");
