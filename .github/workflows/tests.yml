@@ -45,6 +45,12 @@ jobs:
           LN_CLIENT_TYPE: LNURL
           LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
 
+      - name: Run tests for LNURL for no-accept-authenticate-required feature
+        run: cargo test --verbose --features "no-accept-authenticate-required"
+        env: 
+          LN_CLIENT_TYPE: LNURL
+          LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
+
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
           wallet_name="new_wallet"
@@ -96,6 +102,14 @@ jobs:
 
       - name: Run tests for LND
         run: cargo test --verbose
+        env:
+          LN_CLIENT_TYPE: LND
+          LND_ADDRESS: 0.0.0.0:10009
+          MACAROON_FILE_PATH: ${{ env.MACAROON_PATH }}
+          CERT_FILE_PATH: ${{ env.CERT_PATH }}
+
+      - name: Run tests for LND for no-accept-authenticate-required feature
+        run: cargo test --verbose --features "no-accept-authenticate-required"
         env:
           LN_CLIENT_TYPE: LND
           LND_ADDRESS: 0.0.0.0:10009

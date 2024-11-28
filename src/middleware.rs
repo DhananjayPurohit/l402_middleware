@@ -127,6 +127,10 @@ impl Fairing for L402Middleware {
                     }
                 },
                 Err(error) => {
+                    #[cfg(feature = "no-accept-authenticate-required")]
+                    L402Middleware::set_l402_header(self, request, caveats).await;
+
+                    #[cfg(not(feature = "no-accept-authenticate-required"))]
                     if let Some(accept_l402_field) = request.headers().get_one(l402::L402_HEADER_NAME) {
                         if accept_l402_field.contains(l402::L402_HEADER) {
                             L402Middleware::set_l402_header(self, request, caveats).await;
@@ -152,6 +156,10 @@ impl Fairing for L402Middleware {
                 },
             }
         } else {
+            #[cfg(feature = "no-accept-authenticate-required")]
+            L402Middleware::set_l402_header(self, request, caveats).await;
+
+            #[cfg(not(feature = "no-accept-authenticate-required"))]
             if let Some(accept_l402_field) = request.headers().get_one(l402::L402_HEADER_NAME) {
                 if accept_l402_field.contains(l402::L402_HEADER) {
                     L402Middleware::set_l402_header(self, request, caveats).await;

@@ -24,3 +24,6 @@ rocket = { version = "0.5.0-rc.3", features = ["json"] }
 serde = "1.0.210"
 tokio = "1.40.0"
 tonic_openssl_lnd = "0.2.0"
+
+[features]
+no-accept-authenticate-required = []
