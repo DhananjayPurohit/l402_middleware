@@ -13,6 +13,7 @@ use l402_middleware::{l402, lnclient, lnd, lnurl, macaroon_util, middleware, uti
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
+const MSAT_PER_SAT: i64 = 1000;
 
 #[derive(Serialize)]
 #[serde(crate = "rocket::serde")]
@@ -23,11 +24,11 @@ pub struct FiatRateConfig {
 }
 
 impl FiatRateConfig {
-     // Converts fiat amount to BTC equivalent. Customization possible for different API endpoints.
+     // Converts fiat amount to BTC equivalent in millisats. Customization possible for different API endpoints.
     pub async fn fiat_to_btc_amount_func(&self) -> i64 {
         // Return the minimum sats if the amount is invalid.
         if self.amount <= 0.0 {
-            return MIN_SATS_TO_BE_PAID;
+            return MIN_SATS_TO_BE_PAID * MSAT_PER_SAT;
         }
 
         // API request to get BTC equivalent of the fiat amount.
@@ -40,11 +41,11 @@ impl FiatRateConfig {
             Ok(res) => {
                 let body = res.text().await.unwrap_or_else(|_| MIN_SATS_TO_BE_PAID.to_string());
                 match body.parse::<f64>() {
-                    Ok(amount_in_btc) => (SATS_PER_BTC as f64 * amount_in_btc) as i64,
-                    Err(_) => MIN_SATS_TO_BE_PAID,
+                    Ok(amount_in_btc) => ((SATS_PER_BTC as f64 * amount_in_btc) * MSAT_PER_SAT as f64) as i64,
+                    Err(_) => MIN_SATS_TO_BE_PAID * MSAT_PER_SAT,
                 }
             }
-            Err(_) => MIN_SATS_TO_BE_PAID,
+            Err(_) => MIN_SATS_TO_BE_PAID * MSAT_PER_SAT,
         }
     }
 }

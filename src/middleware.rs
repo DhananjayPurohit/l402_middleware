@@ -45,7 +45,7 @@ impl L402Middleware {
 
     pub async fn set_l402_header(&self, request: &mut Request<'_>, caveats: Vec<String>) {
         let ln_invoice = lnrpc::Invoice {
-            value: (self.amount_func)(request).await,
+            value_msat: (self.amount_func)(request).await,
             memo: l402::L402_HEADER.to_string(),
             ..Default::default()
         };
