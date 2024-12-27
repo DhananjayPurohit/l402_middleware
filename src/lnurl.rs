@@ -72,7 +72,7 @@ impl lnclient::LNClient for LnAddressUrlResJson {
         let callback_url = format!(
             "{}?amount={}",
             self.callback,
-            ln_invoice.value
+            ln_invoice.value_msat
         );
 
         Box::pin(async move {
