@@ -11,8 +11,6 @@ use std::pin::Pin;
 use crate::utils;
 use crate::lnclient;
 
-const MSAT_PER_SAT: u64 = 1000;
-
 #[derive(Debug, Clone)]
 pub struct LNURLOptions {
     pub address: String,
@@ -74,7 +72,7 @@ impl lnclient::LNClient for LnAddressUrlResJson {
         let callback_url = format!(
             "{}?amount={}",
             self.callback,
-            MSAT_PER_SAT * (ln_invoice.value as u64)
+            ln_invoice.value_msat
         );
 
         Box::pin(async move {
