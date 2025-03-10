@@ -9,7 +9,7 @@ use std::env;
 use std::sync::Arc;
 use reqwest::Client;
 
-use l402_middleware::{l402, lnclient, lnd, lnurl, macaroon_util, middleware, utils};
+use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, middleware};
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -112,6 +112,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnurl_config: Some(lnurl::LNURLOptions {
                 address: env::var("LNURL_ADDRESS").expect("LNURL_ADDRESS not found in .env"),
             }),
+            nwc_config: None,
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -125,6 +126,19 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 cert_file: env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env"),
             }),
             lnurl_config: None,
+            nwc_config: None,
+            root_key: env::var("ROOT_KEY")
+                .expect("ROOT_KEY not found in .env")
+                .as_bytes()
+                .to_vec(),
+        },
+        "NWC" => lnclient::LNClientConfig {
+            ln_client_type,
+            lnd_config: None,
+            lnurl_config: None,
+            nwc_config: Some(nwc::NWCOptions {
+                uri: env::var("NWC_URI").expect("NWC_URI not found in .env"),
+            }),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -165,8 +179,7 @@ mod tests {
     use super::rocket;
     use lightning::ln::PaymentHash;
 
-    use crate::l402;
-    use crate::utils;
+    use l402_middleware::{l402, utils};
 
     const TEST_MACAROON_VALID: &str = "MDAxMmxvY2F0aW9uIExTQVQKMDAzMGlkZW50aWZpZXIgjWsDO3viVp1lHXWoaN1CiUFeRdn8Z9Zl1AUIfJHKoCkKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSBZJ8RYr2biQ9CRoCxMcmWBObW7L7nS1bvFduQXRIQcJwo=";
 	const TEST_PREIMAGE_VALID: &str = "7c9d69d87a1af5d06ecebee2b095e49423400cf4f1d650292e0256ccea8b2ae2";

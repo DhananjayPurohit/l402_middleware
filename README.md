@@ -1,5 +1,5 @@
 # l402_middleware
-A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs.
+A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs. It supports Lightning Network Daemon (LND), Lightning URL (LNURL), and Nostr Wallet Connect (NWC) for generating invoices.
 
 Check out the Go version here:
 https://github.com/getAlby/lsat-middleware
@@ -27,13 +27,13 @@ The middleware:-
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402_middleware = "1.1.0"
+l402_middleware = "1.3.0"
 ```
 
 By using the no-accept-authenticate-required feature, the check for the Accept-Authenticate header can be bypassed, allowing L402 to be treated as the default authentication option.
 ```toml
 [dependencies]
-l402_middleware = { version = "1.1.0", features = ["no-accept-authenticate-required"] }
+l402_middleware = { version = "1.3.0", features = ["no-accept-authenticate-required"] }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
@@ -51,7 +51,7 @@ use std::env;
 use std::sync::Arc;
 use reqwest::Client;
 
-use l402_middleware::{l402, lnclient, lnd, lnurl, macaroon_util, middleware, utils};
+use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, middleware};
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -154,6 +154,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnurl_config: Some(lnurl::LNURLOptions {
                 address: env::var("LNURL_ADDRESS").expect("LNURL_ADDRESS not found in .env"),
             }),
+            nwc_config: None,
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -167,6 +168,19 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 cert_file: env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env"),
             }),
             lnurl_config: None,
+            nwc_config: None,
+            root_key: env::var("ROOT_KEY")
+                .expect("ROOT_KEY not found in .env")
+                .as_bytes()
+                .to_vec(),
+        },
+        "NWC" => lnclient::LNClientConfig {
+            ln_client_type,
+            lnd_config: None,
+            lnurl_config: None,
+            nwc_config: Some(nwc::NWCOptions {
+                uri: env::var("NWC_URI").expect("NWC_URI not found in .env"),
+            }),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
