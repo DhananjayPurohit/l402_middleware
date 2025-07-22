@@ -17,7 +17,7 @@ pub struct NWCWrapper {
     pub client: Arc<Mutex<NWC>>,
 }
 
-impl NWCOptions {
+impl NWCWrapper {
     pub async fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
         let nwc_options = ln_client_config.nwc_config.clone().unwrap();
         let uri = NostrWalletConnectURI::parse(&nwc_options.uri)?;
@@ -48,7 +48,7 @@ impl lnclient::LNClient for NWCWrapper {
                     let decoded_invoice = Bolt11Invoice::from_signed(res.invoice.parse::<SignedRawBolt11Invoice>().unwrap()).unwrap();
                     let payment_addr = decoded_invoice.payment_secret();
                     lnrpc::AddInvoiceResponse {
-                        r_hash: hex::decode(&res.payment_hash).unwrap_or_default(),
+                        r_hash: hex::decode(decoded_invoice.payment_hash()).unwrap_or_default(),
                         payment_request: res.invoice,
                         add_index: 0,
                         payment_addr: payment_addr.0.to_vec(),

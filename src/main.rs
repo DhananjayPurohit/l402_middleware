@@ -9,7 +9,7 @@ use std::env;
 use std::sync::Arc;
 use reqwest::Client;
 
-use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, middleware};
+use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, cln, middleware};
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -113,6 +113,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 address: env::var("LNURL_ADDRESS").expect("LNURL_ADDRESS not found in .env"),
             }),
             nwc_config: None,
+            cln_config: None,
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -127,6 +128,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             }),
             lnurl_config: None,
             nwc_config: None,
+            cln_config: None,
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -136,8 +138,22 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             ln_client_type,
             lnd_config: None,
             lnurl_config: None,
+            cln_config: None,
             nwc_config: Some(nwc::NWCOptions {
                 uri: env::var("NWC_URI").expect("NWC_URI not found in .env"),
+            }),
+            root_key: env::var("ROOT_KEY")
+                .expect("ROOT_KEY not found in .env")
+                .as_bytes()
+                .to_vec(),
+        },
+        "CLN" => lnclient::LNClientConfig {
+            ln_client_type,
+            lnd_config: None,
+            lnurl_config: None,
+            nwc_config: None,
+            cln_config: Some(cln::CLNOptions {
+                lightning_dir: env::var("CLN_LIGHTNING_DIR_PATH").expect("CLN_LIGHTNING_DIR_PATH not found in .env"),
             }),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
