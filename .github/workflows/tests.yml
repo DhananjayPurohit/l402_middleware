@@ -53,7 +53,7 @@ jobs:
 
       - name: Start cln
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln
+          docker-compose -f docker-compose-lnd-test.yml up -d --no-deps cln
           sleep 5
 
           docker logs cln
