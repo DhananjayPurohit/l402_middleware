@@ -128,13 +128,13 @@ jobs:
         run: cargo test --verbose
         env: 
           LN_CLIENT_TYPE: NWC
-          NWC_URI: ${{ secrets.NWC_URI }}
+          NWC_URI: ${{ env.NWC_URI }}
 
       - name: Run tests for NWC for no-accept-authenticate-required feature
         run: cargo test --verbose --features "no-accept-authenticate-required"
         env: 
           LN_CLIENT_TYPE: NWC
-          NWC_URI: ${{ secrets.NWC_URI }}
+          NWC_URI: ${{ env.NWC_URI }}
 
       - name: Run tests for CLN
         run: cargo test --verbose
