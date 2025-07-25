@@ -128,13 +128,13 @@ jobs:
         run: cargo test --verbose
         env: 
           LN_CLIENT_TYPE: CLN
-          CLN_LIGHTNING_DIR_PATH: ./cln-socket/lightning-rpc
+          CLN_LIGHTNING_DIR_PATH: /cln-socket/lightning-rpc
 
       - name: Run tests for CLN for no-accept-authenticate-required feature
         run: cargo test --verbose --features "no-accept-authenticate-required"
         env: 
           LN_CLIENT_TYPE: CLN
-          CLN_LIGHTNING_DIR_PATH: ./cln-socket/lightning-rpc
+          CLN_LIGHTNING_DIR_PATH: /cln-socket/lightning-rpc
 
       - name: Run tests for NWC
         run: cargo test --verbose
