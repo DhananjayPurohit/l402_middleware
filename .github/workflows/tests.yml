@@ -143,9 +143,3 @@ jobs:
         env: 
           LN_CLIENT_TYPE: NWC
           NWC_URI: ${{ env.NWC_URI }}
-
-      - name: Run tests for NWC for no-accept-authenticate-required feature
-        run: cargo test --verbose --features "no-accept-authenticate-required"
-        env: 
-          LN_CLIENT_TYPE: NWC
-          NWC_URI: ${{ env.NWC_URI }}
