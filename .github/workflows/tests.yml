@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
           sudo chmod +x /usr/local/bin/docker-compose
-          docker-compose -f docker-compose-lnd-test.yml up --build -d
+          docker-compose -f docker-compose-lnd-test.yml up -d lndnode
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
@@ -50,18 +50,6 @@ jobs:
         env: 
           LN_CLIENT_TYPE: LNURL
           LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
-
-      - name: Run tests for NWC
-        run: cargo test --verbose
-        env: 
-          LN_CLIENT_TYPE: NWC
-          NWC_URI: ${{ secrets.NWC_URI }}
-
-      - name: Run tests for NWC for no-accept-authenticate-required feature
-        run: cargo test --verbose --features "no-accept-authenticate-required"
-        env: 
-          LN_CLIENT_TYPE: NWC
-          NWC_URI: ${{ secrets.NWC_URI }}
 
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
@@ -127,3 +115,31 @@ jobs:
           LND_ADDRESS: 0.0.0.0:10009
           MACAROON_FILE_PATH: ${{ env.MACAROON_PATH }}
           CERT_FILE_PATH: ${{ env.CERT_PATH }}
+
+      - name: Start cln
+        run: |
+          docker-compose -f docker-compose-lnd-test.yml up -d --no-deps cln
+          sleep 5
+
+          docker logs cln
+          echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
+
+          sudo chmod 777 /cln-socket/lightning-rpc
+
+      - name: Run tests for CLN
+        run: cargo test --verbose
+        env: 
+          LN_CLIENT_TYPE: CLN
+          CLN_LIGHTNING_DIR_PATH: /cln-socket/lightning-rpc
+
+      - name: Run tests for CLN for no-accept-authenticate-required feature
+        run: cargo test --verbose --features "no-accept-authenticate-required"
+        env: 
+          LN_CLIENT_TYPE: CLN
+          CLN_LIGHTNING_DIR_PATH: /cln-socket/lightning-rpc
+
+      - name: Run tests for NWC
+        run: cargo test --verbose
+        env: 
+          LN_CLIENT_TYPE: NWC
+          NWC_URI: ${{ env.NWC_URI }}

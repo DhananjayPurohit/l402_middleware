@@ -9,10 +9,12 @@ use std::pin::Pin;
 use crate::lnurl;
 use crate::lnd;
 use crate::nwc;
+use crate::cln;
 
 const LND_CLIENT_TYPE: &str = "LND";
 const LNURL_CLIENT_TYPE: &str = "LNURL";
 const NWC_CLIENT_TYPE: &str = "NWC";
+const CLN_CLIENT_TYPE: &str = "CLN";
 
 #[derive(Debug, Clone)]
 pub struct LNClientConfig {
@@ -20,6 +22,7 @@ pub struct LNClientConfig {
     pub lnd_config: Option<lnd::LNDOptions>,
     pub lnurl_config: Option<lnurl::LNURLOptions>,
     pub nwc_config: Option<nwc::NWCOptions>,
+    pub cln_config: Option<cln::CLNOptions>,
     pub root_key: Vec<u8>,
 }
 
@@ -39,7 +42,8 @@ impl LNClientConn {
         let ln_client: Arc<Mutex<dyn LNClient>> = match ln_client_config.ln_client_type.as_str() {
             LND_CLIENT_TYPE => lnd::LNDWrapper::new_client(ln_client_config).await?,
             LNURL_CLIENT_TYPE => lnurl::LnAddressUrlResJson::new_client(ln_client_config).await?,
-            NWC_CLIENT_TYPE => nwc::NWCOptions::new_client(ln_client_config).await?,
+            NWC_CLIENT_TYPE => nwc::NWCWrapper::new_client(ln_client_config).await?,
+            CLN_CLIENT_TYPE => cln::CLNWrapper::new_client(ln_client_config).await?,
             _ => {
                 return Err(format!(
                     "LN Client type not recognized: {}",
