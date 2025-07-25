@@ -124,6 +124,8 @@ jobs:
           docker logs cln
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
 
+          sudo chmod 777 /cln-socket
+
       - name: Run tests for CLN
         run: cargo test --verbose
         env: 
