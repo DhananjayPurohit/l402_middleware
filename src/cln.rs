@@ -10,6 +10,7 @@ use cln_rpc::model::responses::InvoiceResponse;
 use cln_rpc::primitives::{Amount, AmountOrAny, Sha256};
 use tonic_openssl_lnd::lnrpc;
 use std::error::Error as StdError;
+use uuid::Uuid;
 
 use crate::lnclient;
 
@@ -54,7 +55,7 @@ impl lnclient::LNClient for CLNWrapper {
             let invoice_request = InvoiceRequest {
                 amount_msat: AmountOrAny::Amount(Amount::from_msat(invoice.value_msat as u64)),
                 description: invoice.memo,
-                label: "l402".to_string(),
+                label: format!("l402-{}", Uuid::new_v4()),
                 expiry: None,
                 fallbacks: None,
                 preimage: None,
