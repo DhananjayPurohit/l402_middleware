@@ -27,13 +27,13 @@ The middleware:-
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402_middleware = "1.3.0"
+l402_middleware = "1.6.0"
 ```
 
 By using the no-accept-authenticate-required feature, the check for the Accept-Authenticate header can be bypassed, allowing L402 to be treated as the default authentication option.
 ```toml
 [dependencies]
-l402_middleware = { version = "1.3.0", features = ["no-accept-authenticate-required"] }
+l402_middleware = { version = "1.6.0", features = ["no-accept-authenticate-required"] }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
@@ -195,7 +195,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnurl_config: None,
             nwc_config: None,
             cln_config: Some(cln::CLNOptions {
-                lightning_dir: env::var("CLN_LIGHTNING_DIR_PATH").expect("CLN_LIGHTNING_DIR_PATH not found in .env"),
+                lightning_dir: env::var("CLN_LIGHTNING_RPC_FILE_PATH").expect("CLN_LIGHTNING_RPC_FILE_PATH not found in .env"),
             }),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
@@ -232,4 +232,6 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
 
 ## Testing
 
-Run `cargo test` to run tests.
+Run tests with:
+- `cargo test --verbose` for standard tests
+- `cargo test --verbose --features "no-accept-authenticate-required"` to run tests with accept-authenticate header requirements disabled

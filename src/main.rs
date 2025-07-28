@@ -153,7 +153,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnurl_config: None,
             nwc_config: None,
             cln_config: Some(cln::CLNOptions {
-                lightning_dir: env::var("CLN_LIGHTNING_DIR_PATH").expect("CLN_LIGHTNING_DIR_PATH not found in .env"),
+                lightning_dir: env::var("CLN_LIGHTNING_RPC_FILE_PATH").expect("CLN_LIGHTNING_RPC_FILE_PATH not found in .env"),
             }),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
