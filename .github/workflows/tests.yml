@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
           sudo chmod +x /usr/local/bin/docker-compose
-          docker-compose -f docker-compose-lnd-test.yml up -d lndnode
+          docker-compose -f docker-compose.yml up -d lndnode
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
@@ -118,7 +118,7 @@ jobs:
 
       - name: Start cln
         run: |
-          docker-compose -f docker-compose-lnd-test.yml up -d --no-deps cln
+          docker-compose -f docker-compose.yml up -d --no-deps cln
           sleep 5
 
           docker logs cln
