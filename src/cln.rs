@@ -3,8 +3,6 @@ use tokio::sync::Mutex;
 use std::future::Future;
 use std::pin::Pin;
 use cln_rpc::{ClnRpc, model::*, Response, TypedRequest};
-use cln_rpc::model::requests::GetinfoRequest;
-use cln_rpc::model::responses::GetinfoResponse;
 use cln_rpc::model::requests::InvoiceRequest;
 use cln_rpc::model::responses::InvoiceResponse;
 use cln_rpc::primitives::{Amount, AmountOrAny, Sha256};
@@ -20,7 +18,8 @@ pub struct CLNOptions {
 }
 
 pub struct CLNWrapper {
-    client: Arc<Mutex<ClnRpc>>,
+    client: Arc<Mutex<Option<ClnRpc>>>,
+    lightning_dir: String,
 }
 
 impl CLNWrapper {
@@ -30,16 +29,13 @@ impl CLNWrapper {
         let cln_options = ln_client_config.cln_config.clone().unwrap();
 
         println!("CLN client {}", cln_options.lightning_dir);
-        
-        let mut client = ClnRpc::new(Path::new(&cln_options.lightning_dir)).await
-            .map_err(|e| format!("CLN RPC error: {}", e))?;
 
-        // Get node info to verify connection
-        let request = GetinfoRequest {};
-        let _response: GetinfoResponse = client.call_typed(&request).await
-            .map_err(|e| format!("CLN RPC error: {}", e))?;
+        let wrapper = CLNWrapper {
+            client: Arc::new(Mutex::new(None)),
+            lightning_dir: cln_options.lightning_dir,
+        };
 
-        Ok(Arc::new(Mutex::new(CLNWrapper { client: Arc::new(Mutex::new(client)) })))
+        Ok(Arc::new(Mutex::new(wrapper)))
     }
 }
 
@@ -49,8 +45,19 @@ impl lnclient::LNClient for CLNWrapper {
         invoice: lnrpc::Invoice,
     ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>> + Send>> {
         let client = Arc::clone(&self.client);
+        let lightning_dir = self.lightning_dir.clone();
+        
         Box::pin(async move {
-            let mut client = client.lock().await;
+            let mut client_guard = client.lock().await;
+            
+            if client_guard.is_none() {
+                // Create the CLN RPC client only when needed
+                let new_client = ClnRpc::new(Path::new(&lightning_dir)).await
+                    .map_err(|e| format!("CLN RPC error: {}", e))?;
+                *client_guard = Some(new_client);
+            }
+            
+            let client = client_guard.as_mut().unwrap();
             
             let invoice_request = InvoiceRequest {
                 amount_msat: AmountOrAny::Amount(Amount::from_msat(invoice.value_msat as u64)),
