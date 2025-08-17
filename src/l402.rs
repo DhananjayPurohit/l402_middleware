@@ -83,3 +83,33 @@ pub fn verify_l402(
         }
     }
 }
+
+/// Verify L402 using a provided Verifier instance
+pub fn verify_l402_with_verifier(
+    mac: &Macaroon,
+    verifier: &mut Verifier,
+    root_key: Vec<u8>,
+    preimage: PaymentPreimage,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mac_key = MacaroonKey::generate(&root_key);
+    
+    // Use the provided verifier to verify the macaroon
+    verifier.verify(mac, &mac_key, Default::default())
+        .map_err(|e| format!("Macaroon verification failed: {:?}", e).into())?;
+    
+    // Verify payment hash matches macaroon identifier
+    let payment_hash: PaymentHash = PaymentHash::from(preimage);
+    let payment_hash_hex = hex::encode(payment_hash.0);
+    
+    let macaroon_id = mac.identifier().clone();
+    let macaroon_id_hex = hex::encode(macaroon_id.0).replace("ff", "");
+    
+    if macaroon_id_hex.contains(&payment_hash_hex) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Invalid PaymentHash {} for macaroon {}",
+            payment_hash_hex, macaroon_id_hex
+        ).into())
+    }
+}
