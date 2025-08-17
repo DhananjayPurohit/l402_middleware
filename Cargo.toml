@@ -1,6 +1,6 @@
 [package]
 name = "l402_middleware"
-version = "1.7.0"
+version = "1.8.0"
 description = "A middleware library for rust that provides handler functions to accept microtransactions before serving ad-free content or any paid APIs."
 readme = "README.md"
 documentation = "https://docs.rs/l402_middleware"

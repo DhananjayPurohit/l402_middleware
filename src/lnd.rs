@@ -1,7 +1,6 @@
 use std::{error::Error, sync::Arc};
 use tonic_openssl_lnd::{LndClient};
 use tonic_openssl_lnd::lnrpc;
-use base64;
 use tokio::sync::Mutex;
 use std::future::Future;
 use std::pin::Pin;
