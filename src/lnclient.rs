@@ -24,6 +24,7 @@ pub struct LNClientConfig {
     pub nwc_config: Option<nwc::NWCOptions>,
     pub cln_config: Option<cln::CLNOptions>,
     pub root_key: Vec<u8>,
+    pub bolt12_offer: Option<String>,
 }
 
 pub trait LNClient: Send + Sync + 'static {
@@ -31,6 +32,20 @@ pub trait LNClient: Send + Sync + 'static {
         &self,
         invoice: lnrpc::Invoice,
     ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>> + Send>>;
+
+    // Default implementation for BOLT12 invoice generation from an offer.
+    // By default, it returns an "unsupported" error. Only specific client implementations
+    // (e.g., CLN) are expected to override this.
+    fn generate_bolt12_invoice_from_offer(
+        &self,
+        _offer_string: &str,
+        _amount_msat: u64,
+        _description: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, Box<dyn Error + Send + Sync>>> + Send>> {
+        Box::pin(async {
+            Err("BOLT12 invoice generation from offer is not supported by this client.".into())
+        })
+    }
 }
 
 pub struct LNClientConn {
@@ -68,5 +83,15 @@ impl LNClientConn {
         let payment_hash = PaymentHash(hash);
 
         Ok((invoice.to_string(), payment_hash))
+    }
+
+    pub async fn generate_bolt12_invoice(
+        &self,
+        offer_string: &str,
+        amount_msat: u64,
+        description: &str,
+    ) -> Result<String, Box<dyn Error + Send + Sync>> {
+        let client = &mut self.ln_client.lock().await;
+        client.generate_bolt12_invoice_from_offer(offer_string, amount_msat, description).await
     }
 }
