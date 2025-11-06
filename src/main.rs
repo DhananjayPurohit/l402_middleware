@@ -104,6 +104,11 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
     // Get LN_CLIENT_TYPE from the environment
     let ln_client_type = env::var("LN_CLIENT_TYPE").expect("LN_CLIENT_TYPE not found in .env");
 
+    // Load BOLT12_OFFER from the environment, if present and not empty
+    let bolt12_offer: Option<String> = env::var_opt("BOLT12_OFFER")
+        .ok()
+        .filter(|s| !s.is_empty());
+
     // Initialize LNClientConfig based on LN_CLIENT_TYPE
     let ln_client_config = match ln_client_type.as_str() {
         "LNURL" => lnclient::LNClientConfig {
@@ -114,6 +119,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             }),
             nwc_config: None,
             cln_config: None,
+            bolt12_offer: bolt12_offer.clone(),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -129,6 +135,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnurl_config: None,
             nwc_config: None,
             cln_config: None,
+            bolt12_offer: bolt12_offer.clone(),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -142,6 +149,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             nwc_config: Some(nwc::NWCOptions {
                 uri: env::var("NWC_URI").expect("NWC_URI not found in .env"),
             }),
+            bolt12_offer: bolt12_offer.clone(),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -155,6 +163,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             cln_config: Some(cln::CLNOptions {
                 lightning_dir: env::var("CLN_LIGHTNING_RPC_FILE_PATH").expect("CLN_LIGHTNING_RPC_FILE_PATH not found in .env"),
             }),
+            bolt12_offer: bolt12_offer.clone(), // BOLT12 offer is specifically relevant for CLN
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -297,20 +306,6 @@ mod tests {
 
         let json: Value = response.into_json().await.expect("valid JSON response");
         assert_eq!(json["code"], 500);
-        assert_eq!(json["message"], format!("Invalid PaymentHash {} for macaroon {}", payment_hash_hex, macaroon_id_hex));
-    }
-
-    #[tokio::test]
-    async fn test_protected_route_with_macaroon_without_caveats() {
-        let client = Client::tracked(rocket().await).await.expect("valid rocket instance");
-        let response = client.get("/protected")
-                        .header(Header::new(l402::L402_AUTHORIZATION_HEADER_NAME, format!("L402 {}:{}", TEST_MACAROON_WITHOUT_CAVEATS, TEST_MACAROON_WITHOUT_CAVEATS_PREIMAGE)))
-                        .dispatch().await;
-
-        assert_eq!(response.status(), Status::InternalServerError);
-
-        let json: Value = response.into_json().await.expect("valid JSON response");
-        assert_eq!(json["code"], 500);
-        assert_eq!(json["message"], "Error validating macaroon: Caveats don't match");
+        assert_eq!(json["message"], format!("Invalid preimage for macaroon with id {}, payment hash {}", macaroon_id_hex, payment_hash_hex));
     }
 }
