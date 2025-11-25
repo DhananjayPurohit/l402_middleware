@@ -119,21 +119,45 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 .as_bytes()
                 .to_vec(),
         },
-        "LND" => lnclient::LNClientConfig {
-            ln_client_type,
-            lnd_config: Some(lnd::LNDOptions {
-                address: env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env"),
-                macaroon_file: env::var("MACAROON_FILE_PATH").expect("MACAROON_FILE_PATH not found in .env"),
-                cert_file: env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env"),
-                socks5_proxy: env::var("SOCKS5_PROXY").ok(), // Optional: e.g., "127.0.0.1:9050" for Tor
-            }),
-            lnurl_config: None,
-            nwc_config: None,
-            cln_config: None,
-            root_key: env::var("ROOT_KEY")
-                .expect("ROOT_KEY not found in .env")
-                .as_bytes()
-                .to_vec(),
+        "LND" => {
+            // Check if using LNC
+            let lnc_pairing_phrase = env::var("LNC_PAIRING_PHRASE").ok();
+            let lnc_mailbox_server = env::var("LNC_MAILBOX_SERVER").ok();
+            
+            // Configure based on connection type
+            let lnd_options = if lnc_pairing_phrase.is_some() {
+                // LNC mode - only pairing phrase needed, no cert/macaroon required
+                lnd::LNDOptions {
+                    address: None,
+                    macaroon_file: None,
+                    cert_file: None,
+                    socks5_proxy: None,
+                    lnc_pairing_phrase,
+                    lnc_mailbox_server,
+                }
+            } else {
+                // Traditional mode - all required
+                lnd::LNDOptions {
+                    address: Some(env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env")),
+                    macaroon_file: Some(env::var("MACAROON_FILE_PATH").expect("MACAROON_FILE_PATH not found in .env")),
+                    cert_file: Some(env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env")),
+                    socks5_proxy: env::var("SOCKS5_PROXY").ok(), // Optional: e.g., "127.0.0.1:9050" for Tor
+                    lnc_pairing_phrase: None,
+                    lnc_mailbox_server: None,
+                }
+            };
+            
+            lnclient::LNClientConfig {
+                ln_client_type,
+                lnd_config: Some(lnd_options),
+                lnurl_config: None,
+                nwc_config: None,
+                cln_config: None,
+                root_key: env::var("ROOT_KEY")
+                    .expect("ROOT_KEY not found in .env")
+                    .as_bytes()
+                    .to_vec(),
+            }
         },
         "NWC" => lnclient::LNClientConfig {
             ln_client_type,
