@@ -32,13 +32,18 @@ services:
           --secret-source=file \
           --file.seed=/data/seed.txt \
           --file.wallet-password=/data/walletpassword.txt \
-          --init-file.output-wallet-dir=/root/.lnd/data/chain/bitcoin/regtest \
+          --init-file.output-wallet-dir=/data/.lnd/data/chain/bitcoin/regtest \
           --init-file.validate-password
         mkdir -p /data/.lnd
         if [ ! -f "/data/.lnd/umbrel-lnd.conf" ]; then
           touch "/data/.lnd/umbrel-lnd.conf"
         fi
-        lnd --listen=0.0.0.0:9735 --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create
+        # Remove old TLS cert if it exists to force regeneration with correct hostname
+        if [ -f "/data/.lnd/tls.cert" ]; then
+          rm -f /data/.lnd/tls.cert /data/.lnd/tls.key
+        fi
+        # Start LND with correct lnddir and exec to run in foreground
+        exec lnd --lnddir=/data/.lnd --listen=0.0.0.0:9735 --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create --rpcmiddleware.enable --tlsextradomain=lnd --tlsextraip=127.0.0.1
     ports:
       - "9735:9735"
       - "10009:10009"
@@ -48,9 +53,47 @@ services:
     restart: unless-stopped
     environment:
       HOME: /data
-    command: [ '/init-wallet-k8s.sh' ]
     depends_on:
       - bitcoind
+
+  litd:
+    image: lightninglabs/lightning-terminal:v0.13.4-alpha
+    container_name: litd
+    user: root
+    entrypoint:
+      - sh
+      - -c
+      - |
+        # Wait for LND to be ready
+        echo "Waiting for LND to be ready..."
+        sleep 30
+        while [ ! -f /data/.lnd/tls.cert ]; do
+          echo "Waiting for LND TLS cert..."
+          sleep 5
+        done
+        while [ ! -f /data/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
+          echo "Waiting for LND admin macaroon..."
+          sleep 5
+        done
+        echo "LND files found, starting litd..."
+        # Verify TLS cert exists and show its details
+        if [ -f /data/.lnd/tls.cert ]; then
+          echo "TLS cert found, checking certificate details..."
+          openssl x509 -in /data/.lnd/tls.cert -text -noout | grep -E "(Subject:|DNS:|IP Address:)" || true
+        fi
+        # Copy LND's TLS cert to system trust store for verification
+        cp /data/.lnd/tls.cert /usr/local/share/ca-certificates/lnd.crt 2>/dev/null || true
+        update-ca-certificates 2>/dev/null || true
+        echo "Starting litd with LND connection to lnd:10009..."
+        exec litd --lnd-mode=remote --network=regtest --remote.lnd.rpcserver=lnd:10009 --remote.lnd.macaroonpath=/data/.lnd/data/chain/bitcoin/regtest/admin.macaroon --remote.lnd.tlscertpath=/data/.lnd/tls.cert --httpslisten=0.0.0.0:8443 --uipassword=password123 --lit-dir=/root/.lit --autopilot.disable
+    ports:
+      - "8443:8443"
+    volumes:
+      - lndnode-data:/data/.lnd
+      - litd-data:/root/.lit
+    depends_on:
+      - lndnode
+    restart: unless-stopped
 
   cln:
     image: elementsproject/lightningd:v25.05
@@ -91,4 +134,5 @@ services:
 volumes:
   bitcoin_data:
   lndnode-data:
+  litd-data:
   cln-data:

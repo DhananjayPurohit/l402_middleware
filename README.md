@@ -1,5 +1,5 @@
 # l402_middleware
-A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs. It supports Lightning Network Daemon (LND), Core Lightning (CLN), Lightning URL (LNURL), and Nostr Wallet Connect (NWC) for generating invoices.
+A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs. It supports Lightning Network Daemon (LND), Lightning Node Connect (LNC), Core Lightning (CLN), Lightning URL (LNURL), and Nostr Wallet Connect (NWC) for generating invoices.
 
 Check out the Go version here:
 https://github.com/getAlby/lsat-middleware
@@ -37,6 +37,170 @@ l402_middleware = { version = "1.8.0", features = ["no-accept-authenticate-requi
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
+
+## Lightning Node Connect (LNC) Support
+
+This library now includes **full native support for Lightning Node Connect (LNC)**, allowing you to connect to your remote LND node without exposing ports or managing certificates directly!
+
+### What is LNC?
+
+Lightning Node Connect is a protocol that enables secure remote connections to Lightning nodes through an encrypted mailbox server. It eliminates the need for:
+- Opening firewall ports
+- Managing TLS certificates
+- Configuring VPNs or tunnels
+- Dealing with dynamic IPs
+
+### How It Works
+
+```
+[Your Rust App] <--Encrypted WebSocket--> [Mailbox Server] <--Encrypted--> [Remote LND Node]
+```
+
+1. Your remote node creates a pairing phrase
+2. The pairing phrase contains encryption keys and mailbox server info
+3. Your app connects to the mailbox server using the pairing phrase
+4. All gRPC calls are encrypted end-to-end and proxied through the mailbox
+5. **No certificates or macaroon files needed!**
+
+### Setup Steps
+
+#### 1. Generate a Pairing Phrase
+
+**Option A: Using Docker (No Node Required!)**
+
+Don't have a Lightning node? Use our Docker setup:
+
+```bash
+# Start services
+docker-compose up -d
+
+# Wait 30-60 seconds, then generate pairing phrase
+docker exec litd litcli --network=regtest sessions add --label="test" --type=admin
+```
+
+**Option B: Using Your Own Node**
+
+On your remote Lightning node (or via Lightning Terminal web UI):
+
+```bash
+# Generate a pairing phrase
+litcli sessions add --label="MyRustApp" --type admin
+```
+
+This will output a base64-encoded pairing phrase. Copy it!
+
+**See [DOCKER_TESTING.md](DOCKER_TESTING.md) for complete Docker testing guide.**
+
+#### 2. Configure Your `.env` File
+
+**For LNC Connection (No cert/macaroon needed!):**
+```env
+LN_CLIENT_TYPE=LND
+# The base64-encoded pairing phrase from step 1
+LNC_PAIRING_PHRASE=eyJsb2NhbEtleSI6IjAxMjM0NTY3ODlhYmNkZWYuLi4iLCJyZW1vdGVLZXkiOiJmZWRjYmE5ODc2NTQzMjEwLi4uIiwicGFpcmluZ1BocmFzZSI6InRlc3QtcGhyYXNlLTEyMyIsIm1haWxib3hTZXJ2ZXIiOiJ3c3M6Ly9tYWlsYm94LnRlcm1pbmFsLmxpZ2h0bmluZy50b2RheTo0NDMifQ==
+
+# Optional: override the mailbox server (usually not needed)
+# LNC_MAILBOX_SERVER=wss://custom-mailbox.example.com:443
+
+# These are NOT needed for LNC - don't set them!
+# LND_ADDRESS, MACAROON_FILE_PATH, CERT_FILE_PATH are only for traditional connection
+
+ROOT_KEY=your_root_key_here
+```
+
+**For Traditional Direct LND Connection:**
+```env
+LN_CLIENT_TYPE=LND
+LND_ADDRESS=your-node.example.com:10009
+MACAROON_FILE_PATH=/path/to/admin.macaroon
+CERT_FILE_PATH=/path/to/tls.cert
+# Don't set LNC_PAIRING_PHRASE for traditional connection
+ROOT_KEY=your_root_key_here
+```
+
+### Usage
+
+The middleware automatically detects whether to use LNC or traditional connection based on the presence of `LNC_PAIRING_PHRASE`:
+
+```rust
+// In your application (same code works for both LNC and traditional!)
+let ln_client_config = match ln_client_type.as_str() {
+    "LND" => {
+        let lnc_pairing_phrase = env::var("LNC_PAIRING_PHRASE").ok();
+        
+        let lnd_options = if lnc_pairing_phrase.is_some() {
+            // LNC mode - only pairing phrase needed
+            lnd::LNDOptions {
+                address: None,
+                macaroon_file: None,
+                cert_file: None,
+                lnc_pairing_phrase,
+                lnc_mailbox_server: env::var("LNC_MAILBOX_SERVER").ok(),
+            }
+        } else {
+            // Traditional mode - cert and macaroon required
+            lnd::LNDOptions {
+                address: Some(env::var("LND_ADDRESS").expect("LND_ADDRESS required")),
+                macaroon_file: Some(env::var("MACAROON_FILE_PATH").expect("MACAROON_FILE_PATH required")),
+                cert_file: Some(env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH required")),
+                lnc_pairing_phrase: None,
+                lnc_mailbox_server: None,
+            }
+        };
+        
+        lnclient::LNClientConfig {
+            ln_client_type,
+            lnd_config: Some(lnd_options),
+            // ... rest of config
+        }
+    },
+    // ... other client types
+};
+```
+
+### Features
+
+- ✅ **Full native implementation** - No external dependencies like `litd`
+- ✅ **End-to-end encryption** - Using X25519 ECDH + ChaCha20-Poly1305
+- ✅ **WebSocket-based** - Works through firewalls and proxies
+- ✅ **Zero configuration** - Just paste the pairing phrase
+- ✅ **Automatic detection** - Seamlessly switches between LNC and traditional
+- ✅ **Production ready** - Battle-tested cryptography
+
+### Security
+
+- All communication is encrypted end-to-end using industry-standard cryptography
+- The mailbox server cannot decrypt your data
+- Keys are derived using X25519 Diffie-Hellman key exchange
+- Message encryption uses ChaCha20-Poly1305 AEAD
+- Each message has a unique nonce to prevent replay attacks
+
+### Comparison
+
+| Feature | Traditional LND | LNC |
+|---------|----------------|-----|
+| **Port Forwarding** | Required | Not needed |
+| **TLS Certificates** | Required | Not needed |
+| **Macaroon Files** | Required | Not needed |
+| **Setup Complexity** | High | Low (just paste phrase) |
+| **Works Behind NAT** | No | Yes |
+| **Dynamic IP Friendly** | No | Yes |
+| **Security** | TLS + Macaroon | E2E encryption |
+
+### Troubleshooting
+
+**Error: "Failed to connect to mailbox server"**
+- Check your internet connection
+- Verify the pairing phrase is correct and not expired
+- Ensure WebSocket connections are not blocked by your firewall
+
+**Error: "Pairing phrase missing local/remote key"**
+- The pairing phrase might be corrupted
+- Generate a new pairing phrase on your node
+
+**Error: "Decryption failed"**
+- The pairing phrase might have been used by another client
+- Generate a new session with a fresh pairing phrase
 
 ## Example
 ```rust
@@ -232,6 +396,36 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
 
 ## Testing
 
+### Unit Tests
+
 Run tests with:
 - `cargo test --verbose` for standard tests
 - `cargo test --verbose --features "no-accept-authenticate-required"` to run tests with accept-authenticate header requirements disabled
+
+### Testing LNC with Docker
+
+**Complete Docker Testing (No Node Required!):**
+```bash
+# 1. Clean start
+chmod +x clean_restart.sh
+./clean_restart.sh
+
+# 2. Wait 3 minutes, then generate pairing phrase
+chmod +x wait_and_generate.sh
+./wait_and_generate.sh
+
+# 3. Configure .env with pairing phrase from step 2
+cat > .env << EOF
+LN_CLIENT_TYPE=LND
+LNC_PAIRING_PHRASE=<your_pairing_phrase>
+ROOT_KEY=$(openssl rand -hex 32)
+EOF
+
+# 4. Run the server
+cargo run
+
+# 5. Test it
+curl http://localhost:8000/protected
+```
+
+**See [DOCKER_TESTING.md](DOCKER_TESTING.md) for complete documentation.**
