@@ -53,7 +53,6 @@ impl lnclient::LNClient for Bolt12Wrapper {
             let mut client_guard = client.lock().await;
             
             if client_guard.is_none() {
-                // Create the CLN RPC client only when needed
                 let new_client = ClnRpc::new(Path::new(&lightning_dir)).await
                     .map_err(|e| format!("CLN RPC error: {}", e))?;
                 *client_guard = Some(new_client);
@@ -77,7 +76,6 @@ impl lnclient::LNClient for Bolt12Wrapper {
             let response: FetchinvoiceResponse = match client.call_typed(&fetch_invoice_request).await {
                 Ok(res) => res,
                 Err(e) => {
-                    // Invalidate client on error to force reconnection next time
                     *client_guard = None;
                     return Err(format!("CLN RPC error: {}", e).into());
                 }
@@ -85,8 +83,7 @@ impl lnclient::LNClient for Bolt12Wrapper {
 
             let invoice_str = response.invoice;
             
-            // The fetchinvoice RPC returns the BOLT12 invoice string but not the payment hash directly.
-            // We use the `decode` RPC to extract the payment hash from the invoice, which is required for L402.
+            // Decode to extract payment hash
             let decode_request = cln_rpc::model::requests::DecodeRequest {
                 string: invoice_str.clone(),
             };
@@ -94,23 +91,28 @@ impl lnclient::LNClient for Bolt12Wrapper {
             let decode_response: cln_rpc::model::responses::DecodeResponse = match client.call_typed(&decode_request).await {
                  Ok(res) => res,
                  Err(e) => {
-                     // Invalidate client on error
                      *client_guard = None;
                      return Err(format!("CLN RPC error during decode: {}", e).into());
                  }
             };
                 
-            // decode_response should have payment_hash
-            let payment_hash = decode_response.payment_hash.ok_or("No payment hash in decode response")?;
+            // BOLT12 invoices return `invoice_payment_hash` (hex) instead of `payment_hash` (Sha256)
+            let payment_hash_bytes = if let Some(ph) = decode_response.payment_hash {
+                <cln_rpc::primitives::Sha256 as AsRef<[u8]>>::as_ref(&ph).to_vec()
+            } else if let Some(ph_hex) = decode_response.invoice_payment_hash {
+                hex::decode(ph_hex).map_err(|e| format!("Invalid hex in invoice_payment_hash: {}", e))?
+            } else {
+                return Err("No payment hash in decode response".into());
+            };
+
             let payment_secret = decode_response.payment_secret;
             
             Ok(lnrpc::AddInvoiceResponse {
-                r_hash: <cln_rpc::primitives::Sha256 as AsRef<[u8]>>::as_ref(&payment_hash).to_vec(),
+                r_hash: payment_hash_bytes,
                 payment_request: invoice_str,
                 add_index: 0,
                 payment_addr: if let Some(secret) = payment_secret {
-                    // Use unsafe transmute to access bytes since field is private and no accessors exist
-                    // Secret is struct Secret([u8; 32])
+                    // Secret is struct Secret([u8; 32]) - private field access via unsafe
                     unsafe { std::mem::transmute::<_, [u8; 32]>(secret).to_vec() }
                 } else {
                     vec![]
