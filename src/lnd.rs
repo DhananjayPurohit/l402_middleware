@@ -92,10 +92,10 @@ impl LNDWrapper {
             && trimmed.chars().all(|c| c.is_ascii_hexdigit());
         
         let pairing_data = if is_hex {
-            eprintln!("Detected pairing_secret hex format, parsing directly...");
-            eprintln!("Pairing_secret hex: {}", trimmed);
-            // It's a hex string - use pairing_secret directly (source of truth)
-            lnc::parse_pairing_phrase_from_secret(trimmed)?
+            eprintln!("Detected entropy hex format, parsing directly...");
+            eprintln!("Entropy hex: {}", trimmed);
+            // It's a hex string - use entropy directly
+            lnc::parse_pairing_phrase_from_entropy(trimmed)?
         } else {
             eprintln!("Detected mnemonic phrase format, parsing...");
             // It's a mnemonic phrase - derive from mnemonic

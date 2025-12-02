@@ -14,7 +14,7 @@ services:
       - bitcoin_data:/root/.bitcoin
 
   lndnode:
-    image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
+    image: lightninglabs/lndinit:v0.1.33-beta-lnd-v0.20.0-beta
     container_name: lndnode
     user: root
     hostname: lnd
@@ -57,7 +57,7 @@ services:
       - bitcoind
 
   litd:
-    image: lightninglabs/lightning-terminal:v0.13.4-alpha
+    image: lightninglabs/lightning-terminal:v0.16.0-alpha
     container_name: litd
     user: root
     entrypoint:
@@ -85,7 +85,15 @@ services:
         cp /data/.lnd/tls.cert /usr/local/share/ca-certificates/lnd.crt 2>/dev/null || true
         update-ca-certificates 2>/dev/null || true
         echo "Starting litd with LND connection to lnd:10009..."
-        exec litd --lnd-mode=remote --network=regtest --remote.lnd.rpcserver=lnd:10009 --remote.lnd.macaroonpath=/data/.lnd/data/chain/bitcoin/regtest/admin.macaroon --remote.lnd.tlscertpath=/data/.lnd/tls.cert --httpslisten=0.0.0.0:8443 --uipassword=password123 --lit-dir=/root/.lit --autopilot.disable
+        exec litd --lnd-mode=remote --network=regtest \
+          --remote.lnd.rpcserver=lnd:10009 \
+          --remote.lnd.macaroonpath=/data/.lnd/data/chain/bitcoin/regtest/admin.macaroon \
+          --remote.lnd.tlscertpath=/data/.lnd/tls.cert \
+          --httpslisten=0.0.0.0:8443 \
+          --uipassword=password123 \
+          --lit-dir=/root/.lit \
+          --autopilot.disable \
+          --remote.lit-debuglevel=trace
     ports:
       - "8443:8443"
     volumes:
