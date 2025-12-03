@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-  pull_request_target:
+  pull_request:
     branches:
       - main
 
@@ -36,20 +36,20 @@ jobs:
       - name: Create env file
         run: |
           touch .env
-          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
+          echo ROOT_KEY=ABDEGHKLMPTC >> .env
           cat .env
 
       - name: Run tests for LNURL
         run: cargo test --verbose
         env: 
           LN_CLIENT_TYPE: LNURL
-          LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
+          LNURL_ADDRESS: hello@getalby.com
 
       - name: Run tests for LNURL for no-accept-authenticate-required feature
         run: cargo test --verbose --features "no-accept-authenticate-required"
         env: 
           LN_CLIENT_TYPE: LNURL
-          LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
+          LNURL_ADDRESS: hello@getalby.com
 
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
