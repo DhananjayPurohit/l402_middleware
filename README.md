@@ -167,6 +167,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 address: env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env"),
                 macaroon_file: env::var("MACAROON_FILE_PATH").expect("MACAROON_FILE_PATH not found in .env"),
                 cert_file: env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env"),
+                socks5_proxy: env::var("SOCKS5_PROXY").ok(), // Optional: e.g., "127.0.0.1:9050" for Tor
             }),
             lnurl_config: None,
             nwc_config: None,

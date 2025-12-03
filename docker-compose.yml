@@ -13,6 +13,26 @@ services:
     volumes:
       - bitcoin_data:/root/.bitcoin
 
+  tor:
+    image: dperson/torproxy:latest
+    container_name: tor
+    ports:
+      - "9050:9050"  # SOCKS5 proxy
+      - "9051:9051"  # Control port
+    volumes:
+      - tor-data:/var/lib/tor
+    restart: unless-stopped
+    command: >
+      sh -c "
+      echo 'SOCKSPort 0.0.0.0:9050' > /etc/tor/torrc &&
+      echo 'ControlPort 0.0.0.0:9051' >> /etc/tor/torrc &&
+      echo 'CookieAuthentication 1' >> /etc/tor/torrc &&
+      echo 'HiddenServiceDir /var/lib/tor/hidden_service/' >> /etc/tor/torrc &&
+      echo 'HiddenServicePort 10009 lndnode:10009' >> /etc/tor/torrc &&
+      echo 'HiddenServiceVersion 3' >> /etc/tor/torrc &&
+      tor -f /etc/tor/torrc
+      "
+
   lndnode:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
     container_name: lndnode
@@ -92,3 +112,4 @@ volumes:
   bitcoin_data:
   lndnode-data:
   cln-data:
+  tor-data:
