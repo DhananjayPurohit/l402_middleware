@@ -112,8 +112,7 @@ impl lnclient::LNClient for Bolt12Wrapper {
                 payment_request: invoice_str,
                 add_index: 0,
                 payment_addr: if let Some(secret) = payment_secret {
-                    // Secret is struct Secret([u8; 32]) - private field access via unsafe
-                    unsafe { std::mem::transmute::<_, [u8; 32]>(secret).to_vec() }
+                    secret.to_vec()
                 } else {
                     vec![]
                 },
