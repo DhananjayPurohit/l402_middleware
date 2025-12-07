@@ -1,5 +1,5 @@
 # l402_middleware
-A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs. It supports Lightning Network Daemon (LND), Core Lightning (CLN), Lightning URL (LNURL), and Nostr Wallet Connect (NWC) for generating invoices.
+A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs. It supports Lightning Network Daemon (LND), Core Lightning (CLN), Lightning URL (LNURL), Nostr Wallet Connect (NWC), and BOLT 12 (Offers) for generating invoices.
 
 Check out the Go version here:
 https://github.com/getAlby/lsat-middleware

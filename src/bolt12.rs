@@ -16,59 +16,63 @@ pub struct Bolt12Options {
     pub offer: String,
 }
 
-pub struct Bolt12Wrapper {
-    client: Arc<Mutex<Option<ClnRpc>>>,
-    lightning_dir: String,
-    offer: String,
+/// Trait for fetching BOLT12 invoices.
+/// This allows us to swap the backend (CLN, LND, etc.) transparently.
+pub trait Bolt12Backend: Send + Sync {
+    fn fetch_invoice(
+        &self,
+        offer: &str,
+        amount_msat: u64,
+        memo: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<(String, Vec<u8>, Option<Vec<u8>>), Box<dyn Error + Send + Sync>>> + Send>>;
 }
 
-impl Bolt12Wrapper {
-    pub async fn new_client(
-        ln_client_config: &lnclient::LNClientConfig,
-    ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
-        let bolt12_options = ln_client_config.bolt12_config.clone().unwrap();
+/// CLN Implementation of Bolt12Backend
+struct ClnBolt12Backend {
+    client: Arc<Mutex<Option<ClnRpc>>>,
+    lightning_dir: String,
+}
 
-        println!("BOLT12 client {} with offer {}", bolt12_options.lightning_dir, bolt12_options.offer);
-
-        let wrapper = Bolt12Wrapper {
+impl ClnBolt12Backend {
+    fn new(lightning_dir: String) -> Self {
+        Self {
             client: Arc::new(Mutex::new(None)),
-            lightning_dir: bolt12_options.lightning_dir,
-            offer: bolt12_options.offer,
-        };
-
-        Ok(Arc::new(Mutex::new(wrapper)))
+            lightning_dir,
+        }
     }
 }
 
-impl lnclient::LNClient for Bolt12Wrapper {
-    fn add_invoice(
+impl Bolt12Backend for ClnBolt12Backend {
+    fn fetch_invoice(
         &self,
-        invoice: lnrpc::Invoice,
-    ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>> + Send>> {
+        offer: &str,
+        amount_msat: u64,
+        memo: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<(String, Vec<u8>, Option<Vec<u8>>), Box<dyn Error + Send + Sync>>> + Send>> {
         let client = Arc::clone(&self.client);
         let lightning_dir = self.lightning_dir.clone();
-        let offer = self.offer.clone();
-        
+        let offer = offer.to_string();
+
         Box::pin(async move {
             let mut client_guard = client.lock().await;
-            
+
             if client_guard.is_none() {
                 let new_client = ClnRpc::new(Path::new(&lightning_dir)).await
                     .map_err(|e| format!("CLN RPC error: {}", e))?;
                 *client_guard = Some(new_client);
             }
-            
+
             let client = client_guard.as_mut().unwrap();
-            
+
             let fetch_invoice_request = FetchinvoiceRequest {
                 offer: offer,
-                amount_msat: Some(Amount::from_msat(invoice.value_msat as u64)),
+                amount_msat: Some(Amount::from_msat(amount_msat)),
                 quantity: None,
                 recurrence_counter: None,
                 recurrence_start: None,
                 recurrence_label: None,
                 timeout: None,
-                payer_note: if invoice.memo.is_empty() { None } else { Some(invoice.memo.clone()) },
+                payer_note: memo,
                 bip353: None,
                 payer_metadata: None,
             };
@@ -82,12 +86,12 @@ impl lnclient::LNClient for Bolt12Wrapper {
             };
 
             let invoice_str = response.invoice;
-            
+
             // Decode to extract payment hash
             let decode_request = cln_rpc::model::requests::DecodeRequest {
                 string: invoice_str.clone(),
             };
-            
+
             let decode_response: cln_rpc::model::responses::DecodeResponse = match client.call_typed(&decode_request).await {
                  Ok(res) => res,
                  Err(e) => {
@@ -95,7 +99,7 @@ impl lnclient::LNClient for Bolt12Wrapper {
                      return Err(format!("CLN RPC error during decode: {}", e).into());
                  }
             };
-                
+
             // BOLT12 invoices return `invoice_payment_hash` (hex) instead of `payment_hash` (Sha256)
             let payment_hash_bytes = if let Some(ph) = decode_response.payment_hash {
                 <cln_rpc::primitives::Sha256 as AsRef<[u8]>>::as_ref(&ph).to_vec()
@@ -105,14 +109,61 @@ impl lnclient::LNClient for Bolt12Wrapper {
                 return Err("No payment hash in decode response".into());
             };
 
-            let payment_secret = decode_response.payment_secret;
+            let payment_secret = decode_response.payment_secret.map(|s| s.to_vec());
+
+            Ok((invoice_str, payment_hash_bytes, payment_secret))
+        })
+    }
+}
+
+pub struct Bolt12Wrapper {
+    backend: Arc<dyn Bolt12Backend>,
+    offer: String,
+}
+
+impl Bolt12Wrapper {
+    pub async fn new_client(
+        ln_client_config: &lnclient::LNClientConfig,
+    ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
+        let bolt12_options = ln_client_config.bolt12_config.clone().unwrap();
+
+        println!("BOLT12 client {} with offer {}", bolt12_options.lightning_dir, bolt12_options.offer);
+
+        // In the future, we can check config to decide which backend to instantiate
+        let backend = ClnBolt12Backend::new(bolt12_options.lightning_dir);
+
+        let wrapper = Bolt12Wrapper {
+            backend: Arc::new(backend),
+            offer: bolt12_options.offer,
+        };
+
+        Ok(Arc::new(Mutex::new(wrapper)))
+    }
+}
+
+impl lnclient::LNClient for Bolt12Wrapper {
+    fn add_invoice(
+        &self,
+        invoice: lnrpc::Invoice,
+    ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>> + Send>> {
+        let backend = Arc::clone(&self.backend);
+        let offer = self.offer.clone();
+
+        Box::pin(async move {
+            let memo = if invoice.memo.is_empty() { None } else { Some(invoice.memo.clone()) };
+            
+            let (payment_request, r_hash, payment_secret) = backend.fetch_invoice(
+                &offer, 
+                invoice.value_msat as u64, 
+                memo
+            ).await?;
             
             Ok(lnrpc::AddInvoiceResponse {
-                r_hash: payment_hash_bytes,
-                payment_request: invoice_str,
+                r_hash,
+                payment_request,
                 add_index: 0,
                 payment_addr: if let Some(secret) = payment_secret {
-                    secret.to_vec()
+                    secret
                 } else {
                     vec![]
                 },
@@ -120,3 +171,4 @@ impl lnclient::LNClient for Bolt12Wrapper {
         })
     }
 }
+
