@@ -10,11 +10,13 @@ use crate::lnurl;
 use crate::lnd;
 use crate::nwc;
 use crate::cln;
+use crate::bolt12;
 
 const LND_CLIENT_TYPE: &str = "LND";
 const LNURL_CLIENT_TYPE: &str = "LNURL";
 const NWC_CLIENT_TYPE: &str = "NWC";
 const CLN_CLIENT_TYPE: &str = "CLN";
+const BOLT12_CLIENT_TYPE: &str = "BOLT12";
 
 #[derive(Debug, Clone)]
 pub struct LNClientConfig {
@@ -23,6 +25,7 @@ pub struct LNClientConfig {
     pub lnurl_config: Option<lnurl::LNURLOptions>,
     pub nwc_config: Option<nwc::NWCOptions>,
     pub cln_config: Option<cln::CLNOptions>,
+    pub bolt12_config: Option<bolt12::Bolt12Options>,
     pub root_key: Vec<u8>,
 }
 
@@ -44,6 +47,7 @@ impl LNClientConn {
             LNURL_CLIENT_TYPE => lnurl::LnAddressUrlResJson::new_client(ln_client_config).await?,
             NWC_CLIENT_TYPE => nwc::NWCWrapper::new_client(ln_client_config).await?,
             CLN_CLIENT_TYPE => cln::CLNWrapper::new_client(ln_client_config).await?,
+            BOLT12_CLIENT_TYPE => bolt12::Bolt12Wrapper::new_client(ln_client_config).await?,
             _ => {
                 return Err(format!(
                     "LN Client type not recognized: {}",

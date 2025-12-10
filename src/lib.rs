@@ -4,6 +4,7 @@ pub mod lnd;
 pub mod lnurl;
 pub mod nwc;
 pub mod cln;
+pub mod bolt12;
 pub mod macaroon_util;
 pub mod middleware;
 pub mod utils;
