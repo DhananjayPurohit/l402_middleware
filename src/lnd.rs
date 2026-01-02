@@ -164,7 +164,7 @@ impl LNDWrapper {
             }
         } else {
             println!("Connecting to LND directly at {}:{}", host, port);
-            let client = tonic_openssl_lnd::connect(host, port, cert, macaroon).await
+            let client = tonic_openssl_lnd::connect(host, port, cert.clone(), macaroon.clone()).await
                 .map_err(|e| format!("Failed to connect to LND at {}:{}: {}", host_clone, port, e))?;
             LndClientWrapper::Standard(client)
         };

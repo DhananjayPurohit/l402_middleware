@@ -2,7 +2,7 @@ use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::{connect_async_with_config, tungstenite::{protocol::Message, handshake::client::generate_key, http::Request}};
-use futures_util::{StreamExt, SinkExt};
+use futures_util::{StreamExt, SinkExt, FutureExt};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
@@ -15,6 +15,7 @@ use k256::{
     ProjectivePoint, Scalar,
 };
 use hex;
+use rand::Rng;
 use serde_json;
 use base64;
 
@@ -413,8 +414,13 @@ pub struct LNCMailbox {
     connection: Option<Arc<Mutex<MailboxConnection>>>,
 }
 
+#[derive(Clone)]
+struct HandshakeParams {
+    noise_state: NoiseHandshakeState,
+    act1_msg: Vec<u8>,
+}
+
 impl LNCMailbox {
-    /// Create a new LNC mailbox connection from pairing data
     pub fn new(
         pairing_data: LNCPairingData,
         mailbox_server: Option<String>,
@@ -477,7 +483,7 @@ impl LNCMailbox {
     }
     
     /// Get the receive SID for client (server-to-client stream)
-    /// This is the unchanged 64-byte stream_id
+    /// In LNC client: receiveSID := GetSID(sid, true) which returns sid
     fn get_receive_sid(&self) -> [u8; 64] {
         let mut sid = [0u8; 64];
         sid.copy_from_slice(&self.stream_id);
@@ -485,7 +491,7 @@ impl LNCMailbox {
     }
     
     /// Get the send SID for client (client-to-server stream)
-    /// This is the 64-byte stream_id with the last byte XORed with 0x01
+    /// In LNC client: sendSID := GetSID(sid, false) which returns sid ^ 0x01
     fn get_send_sid(&self) -> [u8; 64] {
         let mut sid = [0u8; 64];
         sid.copy_from_slice(&self.stream_id);
@@ -514,62 +520,42 @@ impl LNCMailbox {
         eprintln!("  Full Stream ID ({} bytes): {}", self.stream_id.len(), stream_id_hex);
         eprintln!("  Receive SID (server→client): {}", hex::encode(&receive_sid));
         eprintln!("  Send SID (client→server): {}", hex::encode(&send_sid));
-        eprintln!("  Note: SIDs differ only in last byte (XOR 0x01)");
         
-        // CRITICAL: LNC only allows a SINGLE authentication attempt per pairing phrase.
-        // According to the LNC documentation: "LNC will only allow a single attempt to
-        // authenticate this key exchange." This means if the first attempt fails, we cannot
-        // retry with the same pairing phrase. We must ensure the first attempt succeeds.
-        //
-        // CRITICAL: We must wait for the server to be fully ready before attempting connection.
-        // The server's Accept() blocks if there's a previous connection. When it returns after
-        // the previous connection closes, it creates a NEW GoBN connection. We must ensure
-        // no previous connection exists before we start our GoBN handshake.
-        //
-        // CRITICAL: We must wait for the server to be fully ready before starting the handshake.
-        // The server's Accept() blocks if there's a previous connection. When it returns, it
-        // creates a NEW GoBN connection. We must ensure no previous connection exists when
-        // we start, so the server uses the GoBN connection we establish.
-        //
-        // According to server logs:
-        // - Connections take ~5-6 seconds to close after GoBN completes
-        // - Accept() blocks waiting for previous connection to close
-        // - We need to wait long enough that any previous connection has closed
-        //   AND the server is ready to accept our connection
-        //
-        // CRITICAL: We must wait until the server is ready (no previous connection blocking Accept()).
-        // According to server logs, connections can take ~5-6 seconds to close after GoBN completes.
-        // We need to wait long enough that:
-        // 1. Any previous connection has fully closed (~5-6 seconds)
-        // 2. Server's Accept() has returned (if it was blocking)
-        // 3. Server is ready to accept our connection
-        // 4. When we connect, the server will use the GoBN connection we establish (not create a new one)
-        //
-        // We wait 60 seconds to be absolutely sure any previous connection has closed and the server
-        // is ready. This is conservative but necessary given the single-attempt limitation.
-        eprintln!("⏳ Waiting 60s for litd to be ready and ensure no previous connections exist...");
-        eprintln!("⚠️  IMPORTANT: LNC only allows ONE authentication attempt per pairing phrase!");
-        eprintln!("   If this attempt fails, you'll need to generate a new pairing phrase.");
-        eprintln!("   Waiting 60s ensures any previous connection has fully closed.");
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        self.connect_to_mailbox().await
+    }
+    
+    pub async fn connect_to_mailbox(&mut self) -> Result<Arc<Mutex<MailboxConnection>>, Box<dyn Error + Send + Sync>> {
+        let receive_sid = self.get_receive_sid();
+        let send_sid = self.get_send_sid();
         
-        // Only retry on "stream not found" errors - these indicate the server hasn't
-        // registered yet, not an authentication failure. For other errors, we can't retry
-        // because the pairing phrase may have been consumed by the failed attempt.
+        // v8: Log PID to help identify ghost processes
+        eprintln!("🆔 Process ID: {}", std::process::id());
+        
+        // v4: Pre-compute Noise Act 1 and state machine BEFORE the loop.
+        // SPAKE2 masking is expensive and should only happen once.
+        eprintln!("🔐 Pre-computing Noise Act 1 (SPAKE2 masking)...");
+        let mut noise_state = NoiseHandshakeState::new(
+            &self.local_keypair,
+            self.stretched_passphrase.as_ref().unwrap().clone(),
+        )?;
+        let act1_msg = noise_state.act1()?;
+        eprintln!("✅ Act 1 pre-computed ({} bytes)", act1_msg.len());
+        
+        let params = HandshakeParams {
+            noise_state,
+            act1_msg,
+        };
+
         let max_retries = 10;
         let mut attempt = 0;
         
         loop {
             if attempt > 0 {
-                // Only retry if we got "stream not found" - this means the server hasn't
-                // registered yet, so the pairing phrase hasn't been consumed.
-                // Wait longer to ensure the server has fully registered.
-                let delay = 5;
-                eprintln!("Retrying mailbox connection (attempt {}/{})... waiting {}s for server to register", attempt + 1, max_retries, delay);
-                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                eprintln!("Retrying mailbox connection (attempt {}/{})...", attempt + 1, max_retries);
             }
             
-            match self.perform_dual_stream_handshake(&receive_sid, &send_sid).await {
+            // v4: Pass pre-computed params (cloned if we need to retry)
+            match self.perform_dual_stream_handshake(&receive_sid, &send_sid, params.clone()).await {
                 Ok(conn) => {
                     eprintln!("✅ Successfully completed LNC handshake");
                     return Ok(conn);
@@ -578,46 +564,31 @@ impl LNCMailbox {
                     let error_str = e.to_string();
                     eprintln!("❌ Handshake failed: {}", error_str);
                     
-                    // Don't retry on "stream occupied" - another client is connected
-                    if error_str.contains("stream occupied") || error_str.contains("already active") {
-                        return Err(e);
-                    }
+                    let is_occupied = error_str.contains("stream occupied") || error_str.contains("already active");
+                    let is_retryable = is_occupied ||
+                                     error_str.contains("Stream not found") || 
+                                     error_str.contains("stream not found") ||
+                                     error_str.contains("resync required") ||
+                                     error_str.contains("Connection reset") ||
+                                     error_str.contains("timeout");
                     
-                    // Only retry on "stream not found" - this indicates the server hasn't registered yet.
-                    // For other errors (like authentication failures), we can't retry because
-                    // LNC only allows a single authentication attempt per pairing phrase.
-                    let is_stream_not_found = error_str.contains("Stream not found") || error_str.contains("stream not found");
-                    
-                    if !is_stream_not_found {
-                        // This is likely an authentication failure or other non-retryable error.
-                        // Since LNC only allows one attempt, we must fail immediately.
-                        return Err(format!(
-                            "❌ Handshake failed and cannot retry (LNC only allows ONE authentication attempt per pairing phrase).\n\
-                            Error: {}\n\n\
-                            The pairing phrase may have been consumed by this failed attempt.\n\
-                            You'll need to generate a new pairing phrase:\n\
-                            litcli sessions add --label 'l402' --type admin",
-                            error_str
-                        ).into());
+                    if !is_retryable {
+                        return Err(format!("❌ Handshake failed and cannot retry: {}", error_str).into());
                     }
                     
                     attempt += 1;
-                    
                     if attempt >= max_retries {
-                        return Err(format!(
-                            "❌ Stream not found after {} attempts.\n\
-                            Stream ID: {}\n\n\
-                            The stream ID is correctly derived, but litd hasn't registered it.\n\
-                            Make sure:\n\
-                            1. litd is running and connected to the mailbox\n\
-                            2. Use the pairing phrase immediately after generating it\n\
-                            3. The pairing phrase hasn't been used before\n\n\
-                            Generate a fresh phrase: litcli sessions add --label 'l402' --type admin",
-                            attempt, stream_id_hex
-                        ).into());
+                        return Err(format!("❌ Handshake failed after {} attempts: {}", attempt, error_str).into());
                     }
                     
-                    eprintln!("⏳ Stream not found (attempt {}/{}), litd may still be registering...", attempt, max_retries);
+                    // v8.1: Use an even longer randomized backoff (10-20s) for occupied streams
+                    let backoff_ms = if is_occupied { 
+                        rand::thread_rng().gen_range(10000..20000)
+                    } else { 
+                        500 
+                    };
+                    eprintln!("⏳ Waiting {}ms before retry (randomized to prevent lock-step)...", backoff_ms);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                     continue;
                 }
             }
@@ -634,88 +605,201 @@ impl LNCMailbox {
         &mut self,
         receive_sid: &[u8; 64],
         send_sid: &[u8; 64],
+        params: HandshakeParams,
     ) -> Result<Arc<Mutex<MailboxConnection>>, Box<dyn Error + Send + Sync>> {
         let recv_url = self.mailbox_recv_url();
         let send_url = self.mailbox_send_url();
         
         
-        // Step 1: Open SEND connection first and keep it ready
+        
+        
+        // Step 1: Open SEND connection FIRST
         eprintln!("🔌 Opening SEND stream: {}", send_url);
         let (mut send_write, _send_read) = self.try_connect_endpoint(&send_url).await
             .map_err(|e| format!("Failed to connect to send endpoint: {}", e))?;
         
-        // Step 2: Open RECEIVE connection and subscribe BEFORE sending SYN
-        // This ensures we can receive the SYNACK when server sends it
-        eprintln!("🔌 Opening RECEIVE stream: {}", recv_url);
-        let (mut recv_write, mut recv_read) = self.try_connect_endpoint(&recv_url).await
-            .map_err(|e| format!("Failed to connect to receive endpoint: {}", e))?;
-        
-        // Subscribe to the receive stream (server-to-client = unchanged SID)
-        let receive_sid_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &receive_sid[..]);
-        let recv_init = format!(r#"{{"stream_id":"{}"}}"#, receive_sid_base64);
-        eprintln!("📤 Subscribing to RECEIVE stream (server→client)");
-        eprintln!("   Stream ID: {}", hex::encode(&receive_sid[..]));
-        recv_write.send(Message::Text(recv_init)).await
-            .map_err(|e| format!("Failed to subscribe to receive stream: {}", e))?;
-        recv_write.flush().await?;
-        
-        // Small delay to ensure subscription is processed
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
-        // CRITICAL: Check if server has already created a new GoBN connection by waiting briefly
-        // for a SYN. If the server's Accept() returned and created a new GoBN connection, it will
-        // be waiting for a SYN. We need to detect this and restart our GoBN handshake.
-        // However, we can't easily detect this without starting the handshake. So we proceed
-        // with the handshake, but we'll handle the case where the server creates a new GoBN
-        // connection after we've completed GoBN (by detecting a new SYN and restarting).
-        
-        // Step 3: Send GoBN SYN message to the server
-        let syn_payload = create_gbn_syn(GBN_N);
-        let syn_payload_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &syn_payload);
         let send_sid_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &send_sid[..]);
-        
-        let send_msg = format!(
+        let receive_sid_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &receive_sid[..]);
+
+        // Step 2: Send GoBN SYN message to the server
+        let syn_payload = create_gbn_syn(GBN_N);
+        let syn_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &syn_payload);
+        let syn_msg = format!(
             r#"{{"desc":{{"stream_id":"{}"}},"msg":"{}"}}"#,
-            send_sid_base64, syn_payload_base64
+            send_sid_base64, syn_base64
         );
         
         eprintln!("📤 Sending GoBN SYN to server (client→server stream)");
-        eprintln!("   SYN payload: {:02x?}", syn_payload);
         eprintln!("   Stream ID: {}", hex::encode(&send_sid[..]));
-        send_write.send(Message::Text(send_msg.clone())).await
-            .map_err(|e| format!("Failed to send SYN: {}", e))?;
-        send_write.flush().await?;
+        if let Err(e) = send_write.send(Message::Text(syn_msg)).await {
+            let _ = send_write.close().await;
+            return Err(format!("Failed to send GoBN SYN: {}", e).into());
+        }
+        if let Err(e) = send_write.flush().await {
+            let _ = send_write.close().await;
+            return Err(format!("Failed to flush GoBN SYN: {}", e).into());
+        }
         eprintln!("✅ GoBN SYN sent");
+
+        // Step 3: Open RECEIVE connection and subscribe
+        eprintln!("🔌 Opening RECEIVE stream: {}", recv_url);
+        let (mut recv_write, mut recv_read) = match self.try_connect_endpoint(&recv_url).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                let _ = send_write.close().await;
+                return Err(format!("Failed to connect to receive endpoint: {}", e).into());
+            }
+        };
+        
+        // Subscribe to the receive stream
+        let recv_init = format!(r#"{{"stream_id":"{}"}}"#, receive_sid_base64);
+        eprintln!("📤 Subscribing to RECEIVE stream (server→client)");
+        eprintln!("   Stream ID: {}", hex::encode(&receive_sid[..]));
+        if let Err(e) = recv_write.send(Message::Text(recv_init)).await {
+            let _ = recv_write.close().await;
+            let _ = send_write.close().await;
+            return Err(format!("Failed to subscribe to receive stream: {}", e).into());
+        }
+        if let Err(e) = recv_write.flush().await {
+            let _ = recv_write.close().await;
+            let _ = send_write.close().await;
+            return Err(format!("Failed to flush receive stream subscription: {}", e).into());
+        }
+        
         
         // Step 4: Wait for server's SYN response (server echoes our SYN)
-        eprintln!("⏳ Waiting for GoBN SYN from server (timeout: 30s)...");
-        let response = tokio::time::timeout(
-            tokio::time::Duration::from_secs(30),
-            recv_read.next()
-        ).await;
+        eprintln!("⏳ Waiting for GoBN SYN from server...");
+        let mut syn_received = false;
+        let mut response_opt: Option<Result<Message, tokio_tungstenite::tungstenite::Error>> = None;
         
-        match response {
-            Ok(Some(Ok(Message::Text(text)))) => {
-                eprintln!("📥 Server response: {}", text);
-                
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                    // Check for error response
-                    if let Some(error) = json.get("error") {
-                        let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-                        let msg = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
-                        
-                        if code == 2 || msg.contains("stream not found") {
-                            return Err(format!(
-                                "❌ Server send stream not found (code {}).\n\n\
-                                The server received our SYN but hasn't created its send stream yet.\n\
-                                This might be a timing issue or the server failed to create the stream.\n\n\
-                                Stream ID we tried: {}", 
-                                code, hex::encode(&receive_sid[..])
-                            ).into());
+        // Retry reading SYN up to 10 times with reconnection on "stream not found"
+        for retry_attempt in 0..10 {
+            let response = recv_read.next().await;
+            
+            match response {
+                Some(Ok(Message::Text(text))) => {
+                    eprintln!("📥 Server response: {}", text);
+                    
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                        // Check for error response from Relay
+                        if let Some(error) = json.get("error") {
+                            let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+                            let msg = error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
+                            
+                            if (code == 2 || msg.contains("stream not found")) && retry_attempt < 9 {
+                                eprintln!("⚠️  Stream not found (attempt {}/10). Re-subscribing...", retry_attempt + 1);
+                                
+                                // Close current connection and wait
+                                let _ = recv_write.close().await;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                                
+                                // RECONNECT AND RE-SUBSCRIBE
+                                match self.try_connect_endpoint(&recv_url).await {
+                                    Ok((mut new_write, new_read)) => {
+                                        let recv_init = format!(r#"{{"stream_id":"{}"}}"#, receive_sid_base64);
+                                        if let Ok(_) = new_write.send(Message::Text(recv_init)).await {
+                                            let _ = new_write.flush().await;
+                                            recv_write = new_write;
+                                            recv_read = new_read;
+                                            eprintln!("✅ Re-subscribed to RECEIVE stream");
+                                            continue;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("⚠️  Reconnection failed: {}", e);
+                                    }
+                                }
+                                continue;
+                            }
+                            
+                            return Err(format!("Mailbox error (code {}): {}", code, msg).into());
                         }
                         
-                        return Err(format!("Mailbox error (code {}): {}", code, msg).into());
+                        // Success - store response and break
+                        response_opt = Some(Ok(Message::Text(text)));
+                        syn_received = true;
+                        break;
+                    } else {
+                        response_opt = Some(Ok(Message::Text(text)));
+                        syn_received = true;
+                        break;
                     }
+                }
+                Some(Ok(Message::Binary(data))) => {
+                    response_opt = Some(Ok(Message::Binary(data)));
+                    syn_received = true;
+                    break;
+                }
+                Some(Ok(Message::Ping(_))) => {
+                    // Manual heartbeat for GoBN handshake phase
+                    eprintln!("📥 Received WS Ping, sending WS Pong...");
+                    let _ = recv_write.send(Message::Pong(vec![])).await;
+                    continue;
+                }
+                Some(Ok(Message::Close(_))) => {
+                    eprintln!("⚠️  WebSocket closed by server while waiting for SYN. Reconnecting...");
+                    // Try to reconnect once if retry_attempt permits
+                    if retry_attempt < 9 {
+                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                         if let Ok((mut new_write, new_read)) = self.try_connect_endpoint(&recv_url).await {
+                             let recv_init = format!(r#"{{"stream_id":"{}"}}"#, receive_sid_base64);
+                             if let Ok(_) = new_write.send(Message::Text(recv_init)).await {
+                                 let _ = new_write.flush().await;
+                                 recv_write = new_write;
+                                 recv_read = new_read;
+                                 continue;
+                             }
+                         }
+                    }
+                    return Err("Connection closed by server while waiting for SYN".into());
+                }
+                Some(Err(e)) => {
+                    eprintln!("⚠️  WebSocket error during SYN read: {}. Reconnecting...", e);
+                    if retry_attempt < 9 {
+                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                         if let Ok((mut new_write, new_read)) = self.try_connect_endpoint(&recv_url).await {
+                             let recv_init = format!(r#"{{"stream_id":"{}"}}"#, receive_sid_base64);
+                             if let Ok(_) = new_write.send(Message::Text(recv_init)).await {
+                                 let _ = new_write.flush().await;
+                                 recv_write = new_write;
+                                 recv_read = new_read;
+                                 continue;
+                             }
+                         }
+                    }
+                    return Err(format!("WebSocket error during SYN read: {}", e).into());
+                }
+                None => {
+                    eprintln!("⚠️  WebSocket stream closed unexpectedly while waiting for SYN. Reconnecting...");
+                    if retry_attempt < 9 {
+                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                         if let Ok((mut new_write, new_read)) = self.try_connect_endpoint(&recv_url).await {
+                             let recv_init = format!(r#"{{"stream_id":"{}"}}"#, receive_sid_base64);
+                             if let Ok(_) = new_write.send(Message::Text(recv_init)).await {
+                                 let _ = new_write.flush().await;
+                                 recv_write = new_write;
+                                 recv_read = new_read;
+                                 continue;
+                             }
+                         }
+                    }
+                    return Err("WebSocket stream closed unexpectedly while waiting for SYN.".into());
+                }
+                _ => continue,
+            }
+        }
+        
+        if !syn_received {
+            return Err("Failed to receive SYN from server after retries".into());
+        }
+        
+        let response = response_opt.unwrap();
+        
+        match response {
+            Ok(Message::Text(text)) => {
+                eprintln!("📥 Processing server SYN response...");
+                
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                     
                     // Parse successful response
                     if let Some(result) = json.get("result") {
@@ -734,7 +818,8 @@ impl LNCMailbox {
                                     return Err(format!("Server N ({}) doesn't match client N ({})", server_n, GBN_N).into());
                                 }
                                 
-                                // Step 4: Send SYNACK back to server to complete GoBN handshake
+                                // Step 4: Send SYNACK back to server IMMEDIATELY to complete GoBN handshake
+                                // CRITICAL: Server times out waiting for SYNACK, so we must send it immediately
                                 let synack_payload = create_gbn_synack();
                                 let synack_payload_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &synack_payload);
                                 
@@ -743,27 +828,33 @@ impl LNCMailbox {
                                     send_sid_base64, synack_payload_base64
                                 );
                                 
-                                eprintln!("📤 Sending GoBN SYNACK to server");
+                                eprintln!("📤 Sending GoBN SYNACK to server (IMMEDIATELY)");
                                 send_write.send(Message::Text(synack_msg)).await
                                     .map_err(|e| format!("Failed to send SYNACK: {}", e))?;
-                                send_write.flush().await?;
-                                eprintln!("✅ GoBN handshake complete!");
+                                send_write.flush().await
+                                    .map_err(|e| format!("Failed to flush SYNACK: {}", e))?;
+                                eprintln!("✅ GoBN handshake complete! (SYNACK sent and flushed)");
                                 
                                 // CRITICAL: The reference Go client sends Act 1 immediately after GoBN handshake completes.
-                                // We should do the same - no waiting. The server's ServerHandshake() is called by gRPC
-                                // asynchronously, and it will wait for Act 1 with a 5-second timeout. Sending immediately
-                                // gives the server maximum time to process Act 1 and send Act 2.
-                                // 
+                                // In Go: NewClientConn calls clientHandshake(), then conn.start(), then ClientHandshake calls DoHandshake.
+                                // The GoBN connection is already started (with sendPacketsForever running) before Act 1 is sent.
+                                // We should send Act 1 immediately - the server's GoBN connection should be ready by now.
+                                // However, we need to ensure the server's GoBN connection is fully ready. The server's
+                                // GoBN connection calls start() after handshake, which starts background goroutines.
+                                // We should send Act 1 immediately, but we need to make sure it's sent correctly.
+                                //
+                                // The server's ServerHandshake() is called by gRPC asynchronously, and it will wait for
+                                // Act 1 with a 5-second timeout. Sending immediately gives the server maximum time to
+                                // process Act 1 and send Act 2.
+                                //
                                 // If Accept() is still blocking, the server will buffer Act 1 in GoBN until ServerHandshake()
                                 // is ready to read it. The GoBN layer handles this automatically.
-                                //
-                                // Note: If the server creates a new GoBN connection after Accept() returns, we'll handle
-                                // it by detecting unexpected packets and responding appropriately. But we don't wait for this
-                                // - we proceed immediately with the Noise handshake.
                                 eprintln!("🔐 Starting Noise XX handshake with SPAKE2 masking...");
                                 
                                 // Perform Noise handshake over the GoBN connection
-                                match self.perform_noise_handshake(&mut send_write, &mut recv_read, &send_sid_base64).await {
+                                // CRITICAL: Send Act 1 immediately - the server's GoBN connection will buffer it
+                                // if ServerHandshake() isn't ready yet. The GoBN layer handles this automatically.
+                                match self.perform_noise_handshake(&mut send_write, &mut recv_read, &send_sid_base64, params.noise_state.clone(), params.act1_msg.clone()).await {
                                     Ok(_) => {
                                         eprintln!("✅ Noise handshake completed successfully!");
                                     }
@@ -796,7 +887,7 @@ impl LNCMailbox {
                 
                 Err(format!("Unexpected response from server: {}", text).into())
             }
-            Ok(Some(Ok(Message::Binary(data)))) => {
+            Ok(Message::Binary(data)) => {
                 eprintln!("📥 Binary response ({} bytes): {:02x?}", data.len(), &data[..data.len().min(20)]);
                 
                 if data.len() >= 2 && data[0] == GBN_MSG_SYN {
@@ -826,13 +917,11 @@ impl LNCMailbox {
                     // a previous connection to close. When it returns, it creates a new GoBN connection.
                     // We need to wait long enough (at least 10 seconds) to catch this new connection.
                     eprintln!("⏳ Checking if server created a new GoBN connection (waiting 10s for potential new SYN)...");
-                    let check_syn = tokio::time::timeout(
-                        tokio::time::Duration::from_secs(10),
-                        recv_read.next()
-                    ).await;
+                    // Check if server sent a new SYN (non-blocking check)
+                    let check_syn = recv_read.next().now_or_never();
                     
                     match check_syn {
-                        Ok(Some(Ok(Message::Text(text)))) => {
+                        Some(Some(Ok(Message::Text(text)))) => {
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if let Some(result) = json.get("result") {
                                     if let Some(msg_b64) = result.get("msg").and_then(|m| m.as_str()) {
@@ -870,7 +959,7 @@ impl LNCMailbox {
                                 }
                             }
                         }
-                        Ok(Some(Ok(Message::Binary(data)))) => {
+                        Some(Some(Ok(Message::Binary(data)))) => {
                             if data.len() >= 2 && data[0] == GBN_MSG_SYN {
                                 eprintln!("⚠️  Server created a new GoBN connection (binary)! Completing new GoBN handshake...");
                                 let new_server_n = data[1];
@@ -901,14 +990,7 @@ impl LNCMailbox {
                             }
                         }
                         _ => {
-                            eprintln!("✅ No new GoBN connection detected - proceeding with Noise handshake");
-                            // CRITICAL: Even if we didn't detect a new GoBN connection, Accept() might still be blocking.
-                            // We need to wait long enough for Accept() to return and ServerHandshake() to be called.
-                            // Accept() can block for up to ~9 seconds waiting for a previous connection to close.
-                            // We wait 10 seconds to be safe, which gives Accept() time to return and ServerHandshake()
-                            // to be called (which has a 5-second timeout for receiving Act 1).
-                            eprintln!("⏳ Waiting 10s for Accept() to return and ServerHandshake() to be called (Accept() can block up to ~9s)...");
-                            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                            eprintln!("✅ No new GoBN connection detected - proceeding with Noise handshake immediately");
                         }
                     }
                     
@@ -916,7 +998,7 @@ impl LNCMailbox {
                     eprintln!("🔐 Starting Noise XX handshake with SPAKE2 masking...");
                     
                     // Perform Noise handshake over the GoBN connection
-                    match self.perform_noise_handshake(&mut send_write, &mut recv_read, &send_sid_base64).await {
+                    match self.perform_noise_handshake(&mut send_write, &mut recv_read, &send_sid_base64, params.noise_state, params.act1_msg).await {
                         Ok(_) => {
                             eprintln!("✅ Noise handshake completed successfully!");
                         }
@@ -942,17 +1024,11 @@ impl LNCMailbox {
                 
                 Err(format!("Unexpected binary response: {} bytes", data.len()).into())
             }
-            Ok(Some(Ok(other))) => {
+            Ok(other) => {
                 Err(format!("Unexpected message type: {:?}", other).into())
             }
-            Ok(Some(Err(e))) => {
+            Err(e) => {
                 Err(format!("WebSocket error: {}", e).into())
-            }
-            Ok(None) => {
-                Err("Connection closed unexpectedly".into())
-            }
-            Err(_) => {
-                Err("Timeout (30s) waiting for SYN from server - server may not be responding".into())
             }
         }
     }
@@ -978,6 +1054,10 @@ fn create_gbn_synack() -> Vec<u8> {
     vec![GBN_MSG_SYNACK]
 }
 
+fn create_gbn_fin() -> Vec<u8> {
+    vec![GBN_MSG_FIN]
+}
+
 fn create_gbn_data_packet(seq: u8, final_chunk: bool, is_ping: bool, payload: &[u8]) -> Vec<u8> {
     let mut packet = Vec::with_capacity(4 + payload.len());
     packet.push(GBN_MSG_DATA);
@@ -1000,6 +1080,11 @@ struct NoiseReadWrite<'a> {
     send_seq: u8,  // Sequence number for GoBN DATA packets
     recv_seq: u8,  // Expected sequence number for received packets
     recv_buffer: Vec<u8>,  // Buffer for reassembling multi-chunk messages
+    // Cache the last Act 1 packet so we can resend it if the server restarts the
+    // GoBN connection and sends a new SYN while we're waiting for Act 2.
+    last_act1_msg_json: Option<String>,
+    last_act1_seq: u8,
+    created_at: tokio::time::Instant,
 }
 
 impl NoiseReadWrite<'_> {
@@ -1033,9 +1118,10 @@ impl NoiseReadWrite<'_> {
     }
     
     async fn write_all(&mut self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // CRITICAL: Noise handshake messages must be wrapped in MsgData format first!
+        // CRITICAL: ALL messages sent through GoBN (including handshake messages) must be wrapped in MsgData format!
         // MsgData format: [version (1 byte)] [payload_length (4 bytes BE)] [payload (N bytes)]
         // ProtocolVersion = 0 for mailbox connections
+        // This matches the Go implementation where connKit.Write() wraps all data in MsgData before sending via GoBN
         const PROTOCOL_VERSION: u8 = 0;
         
         let mut msg_data = Vec::with_capacity(5 + data.len());
@@ -1056,14 +1142,21 @@ impl NoiseReadWrite<'_> {
             self.send_seq,
             true,  // FinalChunk = true (single packet)
             false, // IsPing = false
-            &msg_data,
+            &msg_data,  // Send MsgData-wrapped Noise message
         );
         
         eprintln!("📤 Sending GoBN DATA packet: seq={}, msgdata_size={} bytes, gbn_packet_size={} bytes", 
             self.send_seq, msg_data.len(), gbn_packet.len());
         eprintln!("   First 20 bytes of GoBN packet: {:02x?}", &gbn_packet[..gbn_packet.len().min(20)]);
+        eprintln!("   Full GoBN packet (hex): {}", hex::encode(&gbn_packet));
+        eprintln!("   Sending on stream_id: {}", self.send_sid_base64);
         
         // Increment sequence number for next packet (wrap around at window size N=20)
+        // CRITICAL: Don't increment until AFTER we successfully send, but we need to track
+        // the sequence number for this packet. Actually, we should increment before sending
+        // to match Go implementation, but we need to be careful about retransmissions.
+        // For now, increment after encoding but before sending.
+        let current_seq = self.send_seq;
         self.send_seq = (self.send_seq + 1) % 20;
         
         let payload_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &gbn_packet);
@@ -1072,14 +1165,40 @@ impl NoiseReadWrite<'_> {
             self.send_sid_base64, payload_base64
         );
         
-        self.send_write.send(Message::Text(msg)).await
-            .map_err(|e| format!("Failed to send Noise message: {}", e))?;
+        // Store message length before moving msg
+        let msg_len = msg.len();
+        let msg_preview = if msg.len() > 200 { format!("{}... (truncated)", &msg[..200]) } else { msg.clone() };
+        
+        eprintln!("📤 Sending JSON message to mailbox server (seq={}): {}", current_seq, msg_preview);
+        
+        // CRITICAL: Send the message and ensure it's flushed
+        // The server MUST receive this packet or it will timeout and close the connection
+        // CRITICAL DEBUG: Log the exact stream_id being used
+        eprintln!("🔍 DEBUG: Sending Act 1 on stream_id (base64): {}", self.send_sid_base64);
+        eprintln!("🔍 DEBUG: Stream_id (hex): {}", hex::encode(&base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &self.send_sid_base64).unwrap_or_default()));
+        eprintln!("📤 Sending to WebSocket send stream (stream_id={})...", 
+            &self.send_sid_base64[..self.send_sid_base64.len().min(20)]);
+        
+        // CRITICAL: Send the message and handle any errors
+        // In Go, transport.Send uses a context timeout (sendSocketTimeout = 1000ms)
+        // We use tokio's async send which should handle this, but we need to ensure it completes
+        match self.send_write.send(Message::Text(msg)).await {
+            Ok(_) => {
+                eprintln!("✅ GoBN DATA packet sent to WebSocket (seq={}), now flushing...", current_seq);
+            }
+            Err(e) => {
+                return Err(format!("Failed to send Noise message (seq {}): {}. Message length: {} bytes, stream_id: {}", 
+                    current_seq, e, msg_len, &self.send_sid_base64[..self.send_sid_base64.len().min(20)]).into());
+            }
+        }
         Ok(())
     }
     
     async fn flush(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        eprintln!("🔄 Flushing WebSocket send stream to ensure all data is transmitted...");
         self.send_write.flush().await
-            .map_err(|e| format!("Failed to flush: {}", e))?;
+            .map_err(|e| format!("Failed to flush WebSocket send stream: {}", e))?;
+        eprintln!("✅ WebSocket send stream flushed successfully");
         Ok(())
     }
     
@@ -1089,17 +1208,63 @@ impl NoiseReadWrite<'_> {
         // Keep track of how many control packets we've seen while waiting for DATA
         let mut control_packets_seen = 0;
         
+        // CRITICAL: Read continuously to catch Act 2 when it arrives
+        // The server sends Act 2 immediately after receiving Act 1, but we might receive
+        // ping packets first. We must process all packets and look for Act 2.
+        // 
+        // IMPORTANT: In Go implementation (gbn_conn.go), ping packets increment recvSeq.
+        // So if server sends ping with seq 0, we ACK it and increment recvSeq to 1.
+        // Then Act 2 should come with seq 1 (the next sequence number).
+        // We must match this behavior exactly!
+        let mut max_iterations = 100; // Prevent infinite loops
+        let mut packets_received = 0;
         loop {
-            // Use longer timeout for Act 2 since server might need time to process
-            let response = tokio::time::timeout(
-                tokio::time::Duration::from_secs(60),
+            if max_iterations == 0 {
+                return Err(format!("Timeout: Read {} packets without finding Act 2. Last recv_seq: {}", packets_received, self.recv_seq).into());
+            }
+            max_iterations -= 1;
+            packets_received += 1;
+            
+            // Wait for Act 2 response - server should respond quickly after receiving Act 1
+            // CRITICAL: We must read continuously to catch Act 2 when it arrives.
+            // PROACTIVE FIX: If we don't receive anything for 1.5s, or if we receive a PING,
+            // we proactively resend Act 1 to jumpstart the handshake in case it was lost.
+            eprintln!("🔄 Waiting for next message from server (expecting Act 2 DATA packet, iteration {}, packets received: {})...", 100 - max_iterations, packets_received);
+            
+            let response_result = tokio::time::timeout(
+                tokio::time::Duration::from_millis(1000),
                 self.recv_read.next()
-            ).await
-                .map_err(|_| {
-                    format!("Timeout waiting for Noise Act 2 response (saw {} control packets while waiting). Server may not have sent Act 2, or connection may have closed.", control_packets_seen)
-                })?
-                .ok_or("Connection closed while waiting for response")?
-                .map_err(|e| format!("WebSocket error while waiting for response: {}", e))?;
+            ).await;
+
+            let response = match response_result {
+                Ok(Some(Ok(msg))) => msg,
+                Ok(Some(Err(e))) => {
+                    return Err(format!("WebSocket error while waiting for response: {}", e).into());
+                }
+                Ok(None) => {
+                    return Err("Connection closed while waiting for response".into());
+                }
+                Err(_) => {
+                    // Timeout occurred - proactively resend Act 1
+                    if let Some(act1_json) = &self.last_act1_msg_json {
+                        eprintln!("⏳ Read timeout (1.5s) waiting for Act 2; proactively resending Act 1...");
+                        if let Err(e) = self.send_write.send(Message::Text(act1_json.clone())).await {
+                            eprintln!("⚠️  Failed to resend Act 1 on timeout: {}", e);
+                        } else {
+                            let _ = self.send_write.flush().await;
+                            eprintln!("✅ Act 1 resent on timeout");
+                        }
+                    }
+                    continue; // Continue waiting in the loop
+                }
+            };
+            
+            eprintln!("📨 Received WebSocket message (type: {:?})", 
+                match &response {
+                    Message::Text(_) => "Text",
+                    Message::Binary(_) => "Binary",
+                    _ => "Other",
+                });
             
             match response {
                 Message::Text(text) => {
@@ -1121,8 +1286,9 @@ impl NoiseReadWrite<'_> {
                                     continue; // Skip empty messages
                                 }
                                 
-                                eprintln!("📥 Received GoBN message: type=0x{:02x}, len={} bytes, first 10: {:02x?}", 
-                                    msg_data[0], msg_data.len(), &msg_data[..msg_data.len().min(10)]);
+                                eprintln!("📥 Received GoBN message: type=0x{:02x}, len={} bytes, first 20: {:02x?}", 
+                                    msg_data[0], msg_data.len(), &msg_data[..msg_data.len().min(20)]);
+                                eprintln!("   Full message (hex): {}", hex::encode(&msg_data));
                                 
                                 // Check message type
                                 match msg_data[0] {
@@ -1137,86 +1303,131 @@ impl NoiseReadWrite<'_> {
                                         let final_chunk = msg_data[2] == GBN_TRUE;
                                         let is_ping = msg_data[3] == GBN_TRUE;
                                         
+                                        eprintln!("📥 Processing DATA packet: seq={}, final_chunk={}, is_ping={}, total_len={}, recv_seq={}, buffer_len={}", 
+                                            seq, final_chunk, is_ping, msg_data.len(), self.recv_seq, self.recv_buffer.len());
+                                        eprintln!("   Full packet (hex): {}", hex::encode(&msg_data));
+                                        
                                         // Ping packets have no payload - just send ACK and continue
+                                        // CRITICAL: In Go implementation (gbn_conn.go line 527-551), ping packets:
+                                        // 1. Check if seq == recvSeq (expected sequence)
+                                        // 2. If yes: Send ACK, increment recvSeq, continue (don't pass to upper layer)
+                                        // 3. If no: Send NACK with expected recvSeq (line 561-607)
+                                        // We must match this behavior exactly!
                                         if is_ping {
-                                            eprintln!("📥 Received GoBN ping packet (seq {}), sending ACK immediately to keep connection alive", seq);
-                                            // Send ACK for ping - CRITICAL to keep connection alive
+                                            eprintln!("📥 Received GoBN ping packet (seq {}), current recvSeq={}", seq, self.recv_seq);
+                                            
+                                            // For pings: always ACK; only increment when seq matches expected.
                                             let ack_packet = create_gbn_ack(seq);
                                             let ack_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &ack_packet);
                                             let ack_msg = format!(
                                                 r#"{{"desc":{{"stream_id":"{}"}},"msg":"{}"}}"#,
                                                 self.send_sid_base64, ack_base64
                                             );
-                                            // Make sure ACK is sent - connection will close if server doesn't get pong
                                             if let Err(e) = self.send_write.send(Message::Text(ack_msg)).await {
                                                 eprintln!("⚠️  Failed to send ping ACK: {} - connection may close", e);
                                                 return Err(format!("Failed to send ping ACK: {}", e).into());
                                             }
-                                            eprintln!("✅ Ping ACK sent successfully");
-                                            // Note: We don't increment recv_seq for ping packets
+                                            if let Err(e) = self.send_write.flush().await {
+                                                eprintln!("⚠️  Failed to flush ping ACK: {} - connection may close", e);
+                                                return Err(format!("Failed to flush ping ACK: {}", e).into());
+                                            }
+                                            
+                                            if seq == self.recv_seq {
+                                                self.recv_seq = (self.recv_seq + 1) % 20;
+                                                eprintln!("✅ Ping ACK sent, recvSeq incremented to {}", self.recv_seq);
+                                            } else {
+                                                eprintln!("✅ Ping ACK sent (duplicate/out-of-order), recvSeq remains {}", self.recv_seq);
+                                            }
+
+                                            // PROACTIVE FIX: Server pings are often sent when it's waiting for data.
+                                            // Resend Act 1 here to ensure it gets through.
+                                            if let Some(act1_json) = &self.last_act1_msg_json {
+                                                eprintln!("📤 Received PING waiting for Act 2; proactively resending Act 1...");
+                                                if let Err(e) = self.send_write.send(Message::Text(act1_json.clone())).await {
+                                                    eprintln!("⚠️  Failed to resend Act 1 on PING: {}", e);
+                                                } else {
+                                                    let _ = self.send_write.flush().await;
+                                                    eprintln!("✅ Act 1 resent on PING");
+                                                }
+                                            }
+
                                             continue; // Ping packets have no payload, continue waiting for Act 2
                                         }
                                         
                                         // Check if packet has payload
+                                        // CRITICAL: Ping packets have no payload (len=4), but Act 2 DATA packets have payload (len>=5)
                                         if msg_data.len() < 5 {
-                                            eprintln!("⚠️  Received DATA packet without payload ({} bytes), ignoring", msg_data.len());
+                                            eprintln!("⚠️  Received DATA packet without payload ({} bytes) - this should only happen for ping packets, but is_ping={}", 
+                                                msg_data.len(), is_ping);
+                                            // This shouldn't happen if is_ping was correctly set, but handle it anyway
+                                            if !is_ping {
+                                                eprintln!("❌ ERROR: Non-ping DATA packet has no payload! This is unexpected.");
+                                            }
                                             continue;
                                         }
                                         
                                         let payload = &msg_data[4..];
-                                        eprintln!("📥 Received DATA packet: seq={}, final_chunk={}, is_ping={}, payload_len={} bytes", 
-                                            seq, final_chunk, is_ping, payload.len());
+                                        eprintln!("📥 Received DATA packet with payload: seq={}, final_chunk={}, is_ping={}, payload_len={} bytes, first 20 bytes: {:02x?}", 
+                                            seq, final_chunk, is_ping, payload.len(), &payload[..payload.len().min(20)]);
                                         
                                         // Check if this is the expected sequence number
-                                        // For the first DATA packet after handshake (Act 2), server should send seq 0
-                                        // Be more lenient: if buffer is empty, accept any sequence number for first packet
+                                        // CRITICAL: After ping packets increment recvSeq, Act 2 should come with the next sequence number.
+                                        // If we received ping with seq 0, recvSeq is now 1, so Act 2 should come with seq 1.
                                         if seq != self.recv_seq {
-                                            eprintln!("⚠️  Received DATA packet with seq {} (expected {}), checking if acceptable...", seq, self.recv_seq);
-                                            // If we haven't received any data yet (buffer is empty), accept any seq as first packet
-                                            // This handles cases where sequence numbers might be slightly out of sync
-                                            if self.recv_buffer.is_empty() {
-                                                eprintln!("📥 Accepting seq {} as first packet (buffer empty, resetting expected seq)", seq);
-                                                self.recv_seq = seq; // Reset to match what server actually sent
-                                            } else {
-                                                eprintln!("⚠️  Rejecting out-of-order packet (buffer has {} bytes, expected seq {}, got seq {})", 
-                                                    self.recv_buffer.len(), self.recv_seq, seq);
-                                                // Don't continue - we might want to see what the payload is for debugging
-                                                // But for now, continue to avoid blocking
-                                                continue;
-                                            }
+                                            eprintln!("⚠️  Received DATA packet with seq {} (expected {}), sending NACK", seq, self.recv_seq);
+                                            // Send NACK to request retransmission of the expected sequence
+                                            let nack_packet = vec![GBN_MSG_NACK, self.recv_seq];
+                                            let nack_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &nack_packet);
+                                            let nack_msg = format!(
+                                                r#"{{"desc":{{"stream_id":"{}"}},"msg":"{}"}}"#,
+                                                self.send_sid_base64, nack_base64
+                                            );
+                                            let _ = self.send_write.send(Message::Text(nack_msg)).await;
+                                            let _ = self.send_write.flush().await;
+                                            continue;
                                         }
                                         
                                         eprintln!("✅ Accepting DATA packet with matching sequence number (seq={})", seq);
                                         
-                                        // Increment expected sequence number
-                                        self.recv_seq = (self.recv_seq + 1) % 20;
+                                        // Append payload to reassembly buffer FIRST
+                                        self.recv_buffer.extend_from_slice(payload);
                                         
-                                        // Send ACK back
+                                        // Send ACK immediately - CRITICAL for GoBN protocol
                                         let ack_packet = create_gbn_ack(seq);
                                         let ack_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &ack_packet);
                                         let ack_msg = format!(
                                             r#"{{"desc":{{"stream_id":"{}"}},"msg":"{}"}}"#,
                                             self.send_sid_base64, ack_base64
                                         );
-                                        // Best effort ACK - don't fail if it doesn't send
-                                        let _ = self.send_write.send(Message::Text(ack_msg)).await;
+                                        // CRITICAL: ACK must be sent and flushed immediately
+                                        self.send_write.send(Message::Text(ack_msg)).await
+                                            .map_err(|e| format!("Failed to send ACK: {}", e))?;
+                                        self.send_write.flush().await
+                                            .map_err(|e| format!("Failed to flush ACK: {}", e))?;
+                                        eprintln!("✅ ACK sent and flushed for seq {}", seq);
                                         
-                                        // Append payload to reassembly buffer
-                                        self.recv_buffer.extend_from_slice(payload);
+                                        // Increment expected sequence number AFTER successful processing
+                                        self.recv_seq = (self.recv_seq + 1) % 20;
                                         
                                         // If this is the final chunk, process the complete message
                                         if final_chunk {
                                             let complete_msgdata = std::mem::take(&mut self.recv_buffer);
                                             
-                                            // CRITICAL: Unwrap MsgData format
+                                            // CRITICAL: ALL messages (including handshake) are wrapped in MsgData format!
+                                            // Unwrap MsgData to get the actual Noise handshake message
                                             match self.unwrap_msgdata(&complete_msgdata) {
                                                 Ok(noise_payload) => {
                                                     let len = noise_payload.len().min(buf.len());
                                                     buf[..len].copy_from_slice(&noise_payload[..len]);
+                                                    eprintln!("📦 Unwrapped MsgData to get Noise handshake message: {} bytes", len);
                                                     return Ok(len);
                                                 }
                                                 Err(e) => {
                                                     eprintln!("⚠️  Failed to unwrap MsgData: {}", e);
+                                                    // Don't continue - we've already ACKed, so we need to handle this
+                                                    // Reset buffer and recv_seq to try again
+                                                    self.recv_buffer.clear();
+                                                    self.recv_seq = seq; // Reset to this seq to retry
                                                     continue;  // Skip this packet and wait for next
                                                 }
                                             }
@@ -1233,14 +1444,38 @@ impl NoiseReadWrite<'_> {
                                             control_packets_seen);
                                         continue;
                                     }
+                                    GBN_MSG_NACK => {
+                                        let seq = if msg_data.len() > 1 { msg_data[1] } else { 0 };
+                                        eprintln!("📥 Received NACK packet (expected seq {}), resending last message...", seq);
+                                        if let Some(act1_json) = &self.last_act1_msg_json {
+                                             let _ = self.send_write.send(Message::Text(act1_json.clone())).await;
+                                             let _ = self.send_write.flush().await;
+                                             eprintln!("✅ Last message (Act 1) resent due to NACK");
+                                        }
+                                        continue;
+                                    }
                                     GBN_MSG_FIN => {
                                         // FIN message - connection is being closed
                                         eprintln!("📥 Received FIN packet, connection closing (saw {} control packets before FIN)", control_packets_seen);
                                         return Err(format!("Connection closed by server (FIN) - server closed connection before sending Act 2. Control packets seen: {}", control_packets_seen).into());
                                     }
-                                    GBN_MSG_SYN | GBN_MSG_SYNACK => {
-                                        // These should have been handled during GoBN handshake
-                                        eprintln!("⚠️  Received {} after handshake, ignoring", if msg_data[0] == GBN_MSG_SYN { "SYN" } else { "SYNACK" });
+                                    GBN_MSG_SYN => {
+                                        // v5: Be more tolerant. If we receive a SYN shortly after GoBN handshake
+                                        // is done, it's likely a delayed duplicate from the Relay's buffer.
+                                        let elapsed = self.created_at.elapsed();
+                                        eprintln!("⚠️  Server sent SYN after handshake (elapsed: {:?}).", elapsed);
+                                        
+                                        if elapsed.as_secs() < 5 {
+                                            eprintln!("🛡️  Ignoring suspected stale SYN (arrived within 5s of handshake).");
+                                            continue;
+                                        } else {
+                                            eprintln!("🛑 Genuine server reset detected (SYN arrived >5s after handshake). Triggering full reconnect...");
+                                            return Err("resync required".into());
+                                        }
+                                    }
+                                    GBN_MSG_SYNACK => {
+                                        // Ignore stray SYNACKs after handshake; server likely resending.
+                                        eprintln!("⚠️  Received SYNACK after handshake, ignoring.");
                                         continue;
                                     }
                                     _ => {
@@ -1269,36 +1504,112 @@ impl NoiseReadWrite<'_> {
                     }
                     
                     match data[0] {
+                        GBN_MSG_SYN => {
+                            let elapsed = self.created_at.elapsed();
+                            eprintln!("⚠️  Server sent binary SYN (elapsed: {:?}).", elapsed);
+                            
+                            if elapsed.as_secs() < 5 {
+                                eprintln!("🛡️  Ignoring suspected binary stale SYN (arrived within 5s of handshake).");
+                                continue;
+                            } else {
+                                eprintln!("🛑 Genuine server reset detected (binary SYN arrived >5s after handshake). Triggering full reconnect...");
+                                return Err("resync required".into());
+                            }
+                        }
+                        GBN_MSG_SYNACK => {
+                            eprintln!("⚠️  Received binary SYNACK after handshake, ignoring.");
+                            continue;
+                        }
                         GBN_MSG_DATA => {
-                            if data.len() < 5 {
+                            if data.len() < 4 {
                                 continue;
                             }
                             let seq = data[1];
                             let final_chunk = data[2] == 0x01;
-                            let is_ping = data[3];
-                            let payload = &data[4..];
+                            let is_ping = data[3] == 0x01;
                             
-                            // Handle ping packets
-                            if is_ping == 0x01 {
-                                // Send ACK for ping
-                                let ack_packet = vec![GBN_MSG_ACK, seq];
+                            // Handle ping packets (matching text path logic)
+                            if is_ping {
+                                eprintln!("📥 Received GoBN ping packet (binary, seq {}), current recvSeq={}", seq, self.recv_seq);
+                                
+                                // For pings: always ACK; only increment when seq matches expected.
+                                let ack_packet = create_gbn_ack(seq);
                                 let ack_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &ack_packet);
                                 let ack_msg = format!(
                                     r#"{{"desc":{{"stream_id":"{}"}},"msg":"{}"}}"#,
                                     self.send_sid_base64, ack_base64
                                 );
-                                let _ = self.send_write.send(Message::Text(ack_msg)).await;
+                                if let Err(e) = self.send_write.send(Message::Text(ack_msg)).await {
+                                    eprintln!("⚠️  Failed to send ping ACK: {}", e);
+                                    return Err(format!("Failed to send ping ACK: {}", e).into());
+                                }
+                                if let Err(e) = self.send_write.flush().await {
+                                    eprintln!("⚠️  Failed to flush ping ACK: {}", e);
+                                    return Err(format!("Failed to flush ping ACK: {}", e).into());
+                                }
+                                
+                                if seq == self.recv_seq {
+                                    self.recv_seq = (self.recv_seq + 1) % 20;
+                                    eprintln!("✅ Ping ACK sent (binary), recvSeq incremented to {}", self.recv_seq);
+                                } else {
+                                    eprintln!("✅ Ping ACK sent (binary, duplicate/out-of-order), recvSeq remains {}", self.recv_seq);
+                                }
+
+                                // PROACTIVE FIX: Resend Act 1 on binary PING as well.
+                                if let Some(act1_json) = &self.last_act1_msg_json {
+                                    eprintln!("📤 Received binary PING waiting for Act 2; proactively resending Act 1...");
+                                    if let Err(e) = self.send_write.send(Message::Text(act1_json.clone())).await {
+                                        eprintln!("⚠️  Failed to resend Act 1 on binary PING: {}", e);
+                                    } else {
+                                        let _ = self.send_write.flush().await;
+                                        eprintln!("✅ Act 1 resent on binary PING");
+                                    }
+                                }
+
                                 continue;
                             }
                             
+                            // Check if packet has payload
+                            if data.len() < 5 {
+                                eprintln!("⚠️  Received DATA packet without payload ({} bytes)", data.len());
+                                continue;
+                            }
+                            
+                            let payload = &data[4..];
+                            
+                            // Check if this is the expected sequence number
                             if seq != self.recv_seq {
+                                eprintln!("⚠️  Received DATA packet with seq {} (expected {}), sending NACK", seq, self.recv_seq);
+                                let nack_packet = vec![GBN_MSG_NACK, self.recv_seq];
+                                let nack_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &nack_packet);
+                                let nack_msg = format!(
+                                    r#"{{"desc":{{"stream_id":"{}"}},"msg":"{}"}}"#,
+                                    self.send_sid_base64, nack_base64
+                                );
+                                let _ = self.send_write.send(Message::Text(nack_msg)).await;
+                                let _ = self.send_write.flush().await;
                                 continue;
                             }
                             
-                            self.recv_seq = (self.recv_seq + 1) % 20;
-                            
-                            // Append to reassembly buffer
+                            // Append payload to reassembly buffer FIRST
                             self.recv_buffer.extend_from_slice(payload);
+                            
+                            // Send ACK immediately
+                            let ack_packet = create_gbn_ack(seq);
+                            let ack_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &ack_packet);
+                            let ack_msg = format!(
+                                r#"{{"desc":{{"stream_id":"{}"}},"msg":"{}"}}"#,
+                                self.send_sid_base64, ack_base64
+                            );
+                            if let Err(e) = self.send_write.send(Message::Text(ack_msg)).await {
+                                return Err(format!("Failed to send ACK: {}", e).into());
+                            }
+                            if let Err(e) = self.send_write.flush().await {
+                                return Err(format!("Failed to flush ACK: {}", e).into());
+                            }
+                            
+                            // Increment expected sequence number AFTER successful processing
+                            self.recv_seq = (self.recv_seq + 1) % 20;
                             
                             // If final chunk, unwrap MsgData and return complete message
                             if final_chunk {
@@ -1311,12 +1622,27 @@ impl NoiseReadWrite<'_> {
                                     }
                                     Err(e) => {
                                         eprintln!("⚠️  Failed to unwrap MsgData from binary message: {}", e);
+                                        self.recv_buffer.clear();
+                                        self.recv_seq = seq; // Reset to this seq to retry
                                         continue;  // Skip this packet and wait for next
                                     }
                                 }
                             }
                             
                             // Continue waiting for more chunks
+                            continue;
+                        }
+                        GBN_MSG_NACK => {
+                            let seq = if data.len() > 1 { data[1] } else { 0 };
+                            eprintln!("📥 Received binary NACK packet (expected seq {}), resending last message...", seq);
+                            if let Some(act1_json) = &self.last_act1_msg_json {
+                                 let _ = self.send_write.send(Message::Text(act1_json.clone())).await;
+                                 let _ = self.send_write.flush().await;
+                                 eprintln!("✅ Last message (Act 1) resent due to binary NACK");
+                            }
+                            continue;
+                        }
+                        GBN_MSG_ACK => {
                             continue;
                         }
                         _ => {
@@ -1347,8 +1673,29 @@ struct NoiseHandshakeState {
     handshake_digest: [u8; 32],
     temp_key: [u8; 32],
     cipher: Option<ChaCha20Poly1305>,
+    cipher_nonce: u64,
     
     version: u8,
+}
+
+
+impl Clone for NoiseHandshakeState {
+    fn clone(&self) -> Self {
+        Self {
+            secp: self.secp.clone(),
+            local_keypair: self.local_keypair,
+            local_ephemeral: self.local_ephemeral,
+            remote_ephemeral: self.remote_ephemeral,
+            remote_static: self.remote_static,
+            passphrase_entropy: self.passphrase_entropy.clone(),
+            chaining_key: self.chaining_key,
+            handshake_digest: self.handshake_digest,
+            temp_key: self.temp_key,
+            cipher: self.cipher.as_ref().map(|_| ChaCha20Poly1305::new(&self.temp_key.into())),
+            cipher_nonce: self.cipher_nonce,
+            version: self.version,
+        }
+    }
 }
 
 impl NoiseHandshakeState {
@@ -1357,12 +1704,17 @@ impl NoiseHandshakeState {
         
         // Initialize protocol name: "Noise_XXeke+SPAKE2_secp256k1_ChaChaPoly_SHA256"
         let protocol_name = b"Noise_XXeke+SPAKE2_secp256k1_ChaChaPoly_SHA256";
-        let handshake_digest = Sha256::digest(protocol_name);
-        let chaining_key = handshake_digest.into();
+        let proto_hash = Sha256::digest(protocol_name);
+        eprintln!("🔍 Protocol name hash: {}", hex::encode(&proto_hash));
+        let chaining_key: [u8; 32] = proto_hash.into();
+        let handshake_digest = chaining_key;
         
         // Mix in prologue
-        let prologue_hash = Sha256::digest([&handshake_digest[..], LIGHTNING_NODE_CONNECT_PROLOGUE].concat());
-        let handshake_digest: [u8; 32] = prologue_hash.into();
+        let mut hasher = Sha256::new();
+        hasher.update(&handshake_digest);
+        hasher.update(LIGHTNING_NODE_CONNECT_PROLOGUE);
+        let handshake_digest: [u8; 32] = hasher.finalize().into();
+        eprintln!("🔍 Prologue mixed hash: {}", hex::encode(&handshake_digest));
         
         Ok(Self {
             secp,
@@ -1374,8 +1726,10 @@ impl NoiseHandshakeState {
             chaining_key,
             handshake_digest,
             temp_key: [0u8; 32],
-            cipher: None,
-            version: 0,
+            // Initialize cipher with temp_key=zero (matches brontide initialization)
+            cipher: Some(ChaCha20Poly1305::new(&[0u8; 32].into())),
+            cipher_nonce: 0,
+            version: 2, // Default to Version 2 as server uses it
         })
     }
     
@@ -1392,7 +1746,9 @@ impl NoiseHandshakeState {
         
         // Mix unmasked ephemeral into hash
         let ephem_pub_bytes = self.local_ephemeral.as_ref().unwrap().public_key().serialize();
+        eprintln!("🔍 Unmasked Ephemeral (33 bytes): {}", hex::encode(&ephem_pub_bytes));
         self.mix_hash(&ephem_pub_bytes);
+        eprintln!("🔍 Hash after ephemeral: {}", hex::encode(&self.handshake_digest));
         
         // Mask ephemeral with SPAKE2
         let masked_ephem = spake2_mask(
@@ -1400,9 +1756,16 @@ impl NoiseHandshakeState {
             &self.passphrase_entropy,
         )?;
         
-        // Act 1 message: [version, masked_ephemeral_pubkey]
+        // Act 1 message: [version, masked_ephemeral_pubkey, payload(optional)]
         let mut msg = vec![self.version];
         msg.extend_from_slice(&masked_ephem.serialize());
+
+        // HandshakeVersion1/2 include an encrypted payload (even if empty) in Act 1.
+        // HandshakeVersion0 DOES NOT.
+        if self.version >= 1 {
+            let mac = self.encrypt_and_hash(&[]);
+            msg.extend_from_slice(&mac);
+        }
         
         Ok(msg)
     }
@@ -1474,11 +1837,20 @@ impl NoiseHandshakeState {
         
         // Read and decrypt payload (if any)
         offset += encrypted_static_size;
-        if offset < data.len() {
-            let payload_size = data.len() - offset;
-            if payload_size > 16 { // Has MAC
-                let _payload = self.decrypt_and_hash(&data[offset..])?;
-                // Store auth data if needed (currently not used)
+        if self.version == 0 {
+            // Version 0: Fixed 500 byte payload
+            if offset + 516 <= data.len() {
+                let _payload = self.decrypt_and_hash(&data[offset..offset+516])?;
+            }
+        } else {
+            // Version 1/2: Length-prefixed payload
+            if offset + 20 <= data.len() {
+                let len_bytes = self.decrypt_and_hash(&data[offset..offset+20])?;
+                let payload_len = u32::from_be_bytes(len_bytes[..4].try_into().unwrap()) as usize;
+                offset += 20;
+                if offset + payload_len + 16 <= data.len() {
+                    let _payload = self.decrypt_and_hash(&data[offset..offset+payload_len+16])?;
+                }
             }
         }
         
@@ -1487,27 +1859,30 @@ impl NoiseHandshakeState {
     
     fn act3(&mut self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         // Act 3: [version, s, se]
+        // CRITICAL Order for XX: -> s, se
         // s: our static key (encrypted)
         // se: ECDH(remote_ephemeral, local_static) - computed, not sent
         
-        // Compute se (ECDH)
+        // 1. Encrypt our static key (using key derived after Act 2 'es')
+        let static_key_bytes = self.local_keypair.public_key().serialize();
+        let encrypted_static = self.encrypt_and_hash(&static_key_bytes);
+        
+        // 2. Compute se (ECDH) and mix into key
         let se = self.ecdh(
             &self.remote_ephemeral.unwrap(),
             &self.local_keypair,
         )?;
         self.mix_key(&se);
         
-        // Encrypt our static key
-        let static_key_bytes = self.local_keypair.public_key().serialize();
-        let encrypted_static = self.encrypt_and_hash(&static_key_bytes);
-        
-        // Act 3 message: [version, encrypted_static, encrypted_payload(MAC only)]
+        // Act 3 message: [version, encrypted_static, payload(optional)]
         let mut msg = vec![self.version];
         msg.extend_from_slice(&encrypted_static);
         
-        // Add empty payload (just MAC)
-        let empty_payload = self.encrypt_and_hash(&[]);
-        msg.extend_from_slice(&empty_payload);
+        // HandshakeVersion1/2 include an encrypted payload (even if empty) in Act 3.
+        if self.version >= 1 {
+            let empty_payload = self.encrypt_and_hash(&[]);
+            msg.extend_from_slice(&empty_payload);
+        }
         
         Ok(msg)
     }
@@ -1543,31 +1918,43 @@ impl NoiseHandshakeState {
     }
     
     fn mix_key(&mut self, input: &[u8]) {
-        let empty: [u8; 0] = [];
-        let hk = Hkdf::<Sha256>::new(None, &self.chaining_key);
-        let mut new_ck = [0u8; 32];
-        let mut new_temp_key = [0u8; 32];
+        // Rust Hkdf::new(salt, ikm). Go uses salt=chaining_key, secret(IKM)=input.
+        let hk = Hkdf::<Sha256>::new(Some(&self.chaining_key), input);
+        let mut okm = [0u8; 64];
         
-        hk.expand(input, &mut new_ck)
-            .expect("HKDF should not fail");
-        hk.expand(input, &mut new_temp_key)
-            .expect("HKDF should not fail");
+        // Use empty info string as Go uses empty for HKDF info
+        hk.expand(&[], &mut okm)
+            .expect("HKDF expansion should not fail");
         
-        self.chaining_key = new_ck;
-        self.temp_key = new_temp_key;
+        // Go:
+        // _, _ = h.Read(s.chaining_key[:])
+        // _, _ = h.Read(s.temp_key[:])
+        self.chaining_key.copy_from_slice(&okm[..32]);
+        self.temp_key.copy_from_slice(&okm[32..64]);
         
         // Initialize cipher with temp key
         self.cipher = Some(ChaCha20Poly1305::new(&self.temp_key.into()));
+        self.cipher_nonce = 0;
     }
     
     fn encrypt_and_hash(&mut self, plaintext: &[u8]) -> Vec<u8> {
         let cipher = self.cipher.as_ref()
             .expect("Cipher should be initialized before encrypt_and_hash");
         
-        // Use handshake digest as associated data
-        let nonce = Nonce::from_slice(&[0u8; 12]); // Nonce starts at 0 during handshake
-        let ciphertext = cipher.encrypt(nonce, plaintext)
+        // Use handshake digest as associated data (AAD)
+        use chacha20poly1305::aead::Payload;
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..].copy_from_slice(&self.cipher_nonce.to_le_bytes());
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        
+        let payload = Payload {
+            msg: plaintext,
+            aad: &self.handshake_digest,
+        };
+        
+        let ciphertext = cipher.encrypt(nonce, payload)
             .expect("Encryption should not fail");
+        self.cipher_nonce = self.cipher_nonce.wrapping_add(1);
         
         // Mix ciphertext into hash
         self.mix_hash(&ciphertext);
@@ -1579,12 +1966,22 @@ impl NoiseHandshakeState {
         let cipher = self.cipher.as_ref()
             .ok_or("Cipher not initialized")?;
         
-        // Use handshake digest as associated data
-        let nonce = Nonce::from_slice(&[0u8; 12]); // Nonce starts at 0 during handshake
-        let plaintext = cipher.decrypt(nonce, ciphertext)
-            .map_err(|e| format!("Decryption failed: {}", e))?;
+        // Use handshake digest as associated data (AAD)
+        use chacha20poly1305::aead::Payload;
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..].copy_from_slice(&self.cipher_nonce.to_le_bytes());
+        let nonce = Nonce::from_slice(&nonce_bytes);
         
-        // Mix ciphertext into hash
+        let payload = Payload {
+            msg: ciphertext,
+            aad: &self.handshake_digest,
+        };
+        
+        let plaintext = cipher.decrypt(nonce, payload)
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+        self.cipher_nonce = self.cipher_nonce.wrapping_add(1);
+        
+        // Mix ciphertext (not plaintext!) into hash
         self.mix_hash(ciphertext);
         
         Ok(plaintext)
@@ -1608,12 +2005,18 @@ impl NoiseHandshakeState {
 /// Where N is the SPAKE2 generator point and pw is the passphrase entropy
 fn spake2_mask(e: &PublicKey, passphrase_entropy: &[u8]) -> Result<PublicKey, Box<dyn Error + Send + Sync>> {
     use k256::elliptic_curve::sec1::FromEncodedPoint;
+    use k256::elliptic_curve::ff::PrimeField;
     
-    // Parse SPAKE2 generator point N
+    // Parse SPAKE2 generator point N from hex
     let n_bytes = hex::decode(SPAKE2_N_HEX)
         .map_err(|e| format!("Failed to decode SPAKE2 N: {}", e))?;
+    let n_k256_point = k256::EncodedPoint::from_bytes(&n_bytes)
+        .map_err(|e| format!("Failed to parse SPAKE2 N: {}", e))?;
+    let n_projective = ProjectivePoint::from_encoded_point(&n_k256_point);
+    let n_projective = Option::<ProjectivePoint>::from(n_projective)
+        .ok_or("Failed to convert N to projective point")?;
     
-    // Convert secp256k1 PublicKey to k256 format for point arithmetic
+    // Convert ephemeral key to projective point
     let e_bytes = e.serialize();
     let e_k256_point = k256::EncodedPoint::from_bytes(&e_bytes)
         .map_err(|e| format!("Invalid ephemeral key: {}", e))?;
@@ -1621,86 +2024,98 @@ fn spake2_mask(e: &PublicKey, passphrase_entropy: &[u8]) -> Result<PublicKey, Bo
     let e_projective = Option::<ProjectivePoint>::from(e_projective)
         .ok_or("Failed to convert ephemeral to projective point")?;
     
-    let n_k256_point = k256::EncodedPoint::from_bytes(&n_bytes)
-        .map_err(|e| format!("Failed to parse SPAKE2 N: {}", e))?;
-    let n_projective = ProjectivePoint::from_encoded_point(&n_k256_point);
-    let n_projective = Option::<ProjectivePoint>::from(n_projective)
-        .ok_or("Failed to convert N to projective point")?;
-    
     // Convert passphrase entropy to scalar
-    use k256::elliptic_curve::ff::PrimeField;
-    let pw_hash = Sha256::digest(passphrase_entropy);
-    let pw_hash_array: [u8; 32] = pw_hash.into();
-    let pw_scalar_ct = Scalar::from_repr(pw_hash_array.into());
-    let pw_scalar = Option::<Scalar>::from(pw_scalar_ct)
+    // CRITICAL: Go reference DOES NOT hash the entropy before converting to scalar.
+    // It uses the stretched 32-byte entropy directly.
+    let mut pw_bytes = [0u8; 32];
+    if passphrase_entropy.len() == 32 {
+        pw_bytes.copy_from_slice(passphrase_entropy);
+    } else {
+        return Err("Passphrase entropy must be 32 bytes (stretched)".into());
+    }
+    
+    let pw_scalar = Scalar::from_repr(pw_bytes.into());
+    let pw_scalar = Option::<Scalar>::from(pw_scalar)
         .ok_or("Invalid scalar representation")?;
     
-    // Compute N * pw (scalar multiplication)
-    let n_times_pw = n_projective * pw_scalar;
+    // Perform SPAKE2 masking: me = e + N*pw
+    let point_pw = n_projective * pw_scalar;
+    let masked_projective = e_projective + point_pw;
     
-    // Add: e + (N * pw) using point addition
-    let masked_projective = e_projective + n_times_pw;
+    // Convert back to secp256k1 PublicKey (compressed)
+    let masked_encoded = masked_projective.to_encoded_point(true);
+    let masked_bytes = masked_encoded.as_bytes();
+    let masked_pub = PublicKey::from_slice(masked_bytes)
+        .map_err(|e| format!("Failed to create masked pubkey: {}", e))?;
     
-    // Convert back to compressed public key format
-    let masked_point = masked_projective.to_encoded_point(true); // compressed
-    let masked_bytes = masked_point.as_bytes();
-    
-    // Convert back to secp256k1 PublicKey
-    PublicKey::from_slice(masked_bytes)
-        .map_err(|e| format!("Failed to convert masked point to PublicKey: {}", e).into())
+    Ok(masked_pub)
 }
 
 impl LNCMailbox {
+
     /// Perform Noise XX handshake with SPAKE2 masking over GoBN connection
     async fn perform_noise_handshake(
         &mut self,
         send_write: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>,
         recv_read: &mut futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
         send_sid_base64: &str,
+        mut state: NoiseHandshakeState,
+        act1_msg: Vec<u8>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         use std::io::{Read, Write};
         
         eprintln!("🔐 Starting Noise XX handshake...");
         
+        // CRITICAL: Act 1 is sent IMMEDIATELY after GoBN handshake.
+        eprintln!("📤 Sending Act 1 immediately after GoBN handshake (no waiting for PING)...");
+        
         // Create a read/write adapter for the WebSocket streams
-        // This will handle sending/receiving Noise handshake messages over GoBN
-        // Note: After GoBN handshake, both sides start with seq 0 for their first DATA packet
         let mut noise_rw = NoiseReadWrite {
             send_write,
             recv_read,
             send_sid_base64: send_sid_base64.to_string(),
-            send_seq: 0,  // Start with sequence number 0 (we send Act 1 with seq 0)
-            recv_seq: 0,  // Expect sequence number 0 for first packet from server (Act 2)
-            recv_buffer: Vec::new(),  // Initialize empty buffer for reassembling chunks
+            send_seq: 0,
+            recv_seq: 0,
+            recv_buffer: Vec::new(),
+            last_act1_msg_json: None,
+            last_act1_seq: 0,
+            created_at: tokio::time::Instant::now(),
         };
-        eprintln!("📋 NoiseReadWrite initialized: send_seq=0, recv_seq=0 (expecting Act 2 with seq 0)");
         
-        // Initialize Noise handshake state with raw passphrase entropy (not stretched)
-        // The stretched passphrase is only used for stream ID derivation, not for SPAKE2
-        let mut state = NoiseHandshakeState::new(
-            &self.local_keypair,
-            self.passphrase_entropy.clone(),
-        )?;
-        
-        // Act 1: Send masked ephemeral (me)
-        eprintln!("📤 Noise Act 1: Sending masked ephemeral key...");
-        let act1_msg = state.act1()?;
-        eprintln!("📤 Act 1 message size: {} bytes, first 20: {:02x?}", act1_msg.len(), &act1_msg[..act1_msg.len().min(20)]);
-        noise_rw.write_all(&act1_msg).await?;
-        noise_rw.flush().await?;
+        // Send Act 1
+        const PROTOCOL_VERSION: u8 = 0;
+        let mut act1_msgdata = Vec::with_capacity(5 + act1_msg.len());
+        act1_msgdata.push(PROTOCOL_VERSION);
+        let act1_len = act1_msg.len() as u32;
+        act1_msgdata.extend_from_slice(&act1_len.to_be_bytes());
+        act1_msgdata.extend_from_slice(&act1_msg);
+
+        let act1_seq = noise_rw.send_seq;
+        let act1_gbn_packet = create_gbn_data_packet(act1_seq, true, false, &act1_msgdata);
+
+        // Initial sequence is handled in perform_dual_stream... wait, no, here.
+        noise_rw.send_seq = (noise_rw.send_seq + 1) % 20;
+
+        let act1_payload_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &act1_gbn_packet);
+        let act1_msg_json = format!(r#"{{"desc":{{"stream_id":"{}"}},"msg":"{}"}}"#, noise_rw.send_sid_base64, act1_payload_base64);
+        noise_rw.last_act1_msg_json = Some(act1_msg_json.clone());
+        noise_rw.last_act1_seq = act1_seq;
+
+        noise_rw.send_write.send(Message::Text(act1_msg_json)).await
+            .map_err(|e| format!("Failed to send Act 1: {}", e))?;
+        noise_rw.send_write.flush().await?;
         eprintln!("✅ Act 1 sent and flushed");
         
-        // No delay needed - the server will process Act 1 and send Act 2 when ready.
-        // The GoBN layer will buffer Act 2 until we read it.
-        
-        // Act 2: Receive server's ephemeral, static key, and perform ECDH
-        // Use a longer timeout since the server might need time to process Act 1
-        // and return from Accept() before ServerHandshake() is called
-        eprintln!("⏳ Noise Act 2: Waiting for server response (expecting DATA packet with Act 2, timeout: 60s)...");
-        let mut act2_buf = vec![0u8; 500]; // Max size for act 2
+        // Act 2: Receive server's response
+        // CRITICAL: Buffer must be large enough for Act 2 payload (AuthData).
+        let mut act2_buf = vec![0u8; 4096]; 
         let act2_len = noise_rw.read(&mut act2_buf).await?;
         act2_buf.truncate(act2_len);
-        eprintln!("📥 Received Act 2 data: {} bytes, first 20: {:02x?}", act2_len, &act2_buf[..act2_len.min(20)]);
+        eprintln!(
+            "📥 Received Act 2 data: {} bytes, first 20: {:02x?}",
+            act2_len,
+            &act2_buf[..act2_len.min(20)]
+        );
         
         state.act2(&act2_buf)?;
         eprintln!("✅ Noise Act 2: Received and processed server response");
