@@ -438,86 +438,56 @@ impl LNDWrapper {
         invoice.encode(&mut buf)
             .map_err(|e| format!("Failed to encode invoice: {}", e))?;
         
-        // Create gRPC frame
+        // Create gRPC frame (no HTTP/2 headers - just raw gRPC framing)
         // gRPC format: [compressed flag (1 byte)][message length (4 bytes)][message]
         let mut grpc_frame = Vec::new();
         grpc_frame.push(0); // Not compressed
         grpc_frame.extend_from_slice(&(buf.len() as u32).to_be_bytes());
         grpc_frame.extend_from_slice(&buf);
         
-        // Create gRPC request with headers
-        let request_data = Self::create_grpc_request(
-            "POST",
-            "/lnrpc.Lightning/AddInvoice",
-            grpc_frame,
-        )?;
+        eprintln!("📤 Sending gRPC request: /lnrpc.Lightning/AddInvoice ({} bytes)", grpc_frame.len());
         
-        // Send through mailbox connection
+        // Send through mailbox connection (Noise encrypts, GoBN frames)
         let connection_guard = connection.lock().await;
-        connection_guard.send_encrypted(&request_data).await?;
+        connection_guard.send_encrypted(&grpc_frame).await?;
         
         // Receive response
         let response_data = connection_guard.receive_encrypted().await?;
         drop(connection_guard);
         
-        // Parse gRPC response
+        eprintln!("📥 Received gRPC response: {} bytes", response_data.len());
+        
+        // Parse gRPC response (raw gRPC frame, no HTTP/2 headers)
         let response_message = Self::parse_grpc_response(&response_data)?;
         
         // Decode protobuf response
         let add_invoice_response = lnrpc::AddInvoiceResponse::decode(&mut response_message.as_slice())
             .map_err(|e| format!("Failed to decode response: {}", e))?;
         
-        println!("LNC response: {:?}", add_invoice_response);
+        eprintln!("✅ LNC AddInvoice successful");
         Ok(add_invoice_response)
     }
     
-    /// Create a gRPC request message
-    fn create_grpc_request(
-        method: &str,
-        path: &str,
-        body: Vec<u8>,
-    ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        // Simple HTTP/2-style request format
-        let request = format!(
-            "{} {} HTTP/2.0\r\ncontent-type: application/grpc+proto\r\ncontent-length: {}\r\n\r\n",
-            method,
-            path,
-            body.len()
-        );
-        
-        let mut result = request.as_bytes().to_vec();
-        result.extend_from_slice(&body);
-        
-        Ok(result)
-    }
-    
-    /// Parse a gRPC response message
+    /// Parse a gRPC response message (raw gRPC frame, no HTTP/2 headers)
     fn parse_grpc_response(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        // Find the end of headers (double CRLF)
-        let header_end = data.windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .ok_or("Invalid gRPC response: no header end found")?;
-        
-        let body_start = header_end + 4;
-        
-        if data.len() < body_start + 5 {
-            return Err("Response too short".into());
+        if data.len() < 5 {
+            return Err("Response too short for gRPC frame".into());
         }
         
-        // Parse gRPC frame
-        let _compressed = data[body_start];
+        // Parse gRPC frame: [compressed flag][message length (4 bytes)][message]
+        let _compressed = data[0];
         let message_len = u32::from_be_bytes([
-            data[body_start + 1],
-            data[body_start + 2],
-            data[body_start + 3],
-            data[body_start + 4],
+            data[1],
+            data[2],
+            data[3],
+            data[4],
         ]) as usize;
         
-        let message_start = body_start + 5;
+        let message_start = 5;
         let message_end = message_start + message_len;
         
         if data.len() < message_end {
-            return Err("Response message incomplete".into());
+            return Err(format!("Response message incomplete: expected {} bytes, got {}", message_end, data.len()).into());
         }
         
         Ok(data[message_start..message_end].to_vec())
