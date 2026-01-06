@@ -418,6 +418,9 @@ pub struct LNCMailbox {
     send_key: Option<[u8; 32]>,
     recv_key: Option<[u8; 32]>,
     
+    /// Authentication data received from server in Act 2 (to be sent as gRPC metadata)
+    pub auth_data: Option<String>,
+    
     // Implicit nonces (counters), not sent on wire
     send_nonce: u64,
     recv_nonce: u64,
@@ -452,47 +455,116 @@ impl LNCMailbox {
             recv_key: None,
             send_nonce: 0,
             recv_nonce: 0,
+            auth_data: None,
             connection: None,
         })
     }
     
     /// Encrypt a message using the send cipher and implicit nonce
+    /// Implements the Noise Machine's length-prefixed framing:
+    /// 1. Encrypt 2-byte length header -> 18 bytes (2 + 16 MAC)
+    /// 2. Encrypt message body -> N + 16 bytes
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        eprintln!("🔒 Encrypting {} bytes to send: {:02x?}", plaintext.len(), &plaintext[..plaintext.len().min(50)]);
+        
         let cipher = self.send_cipher.as_ref()
             .ok_or("Send cipher not initialized. Complete the Noise handshake before encrypting.")?;
+        
+        if plaintext.len() > 65535 {
+            return Err("Message too large (max 65535 bytes)".into());
+        }
+        
+        // Step 1: Encrypt the length header (2 bytes)
+        let length = plaintext.len() as u16;
+        let length_bytes = length.to_be_bytes();
         
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&self.send_nonce.to_le_bytes());
         let nonce = Nonce::from_slice(&nonce_bytes);
+        self.send_nonce = self.send_nonce.checked_add(1).ok_or("Send nonce overflow")?;
         
-        // Increment nonce after use
-        self.send_nonce = self.send_nonce.checked_add(1)
-            .ok_or("Send nonce overflow")?;
+        let encrypted_header = cipher.encrypt(nonce, &length_bytes[..])
+            .map_err(|e| format!("Failed to encrypt length header: {}", e))?;
         
-        // Encrypt (Tag is appended automatically by ChaCha20Poly1305)
-        // Note: We DO NOT prepend the nonce to the ciphertext. Noise uses implicit nonces.
-        let ciphertext = cipher.encrypt(nonce, plaintext)
-            .map_err(|e| format!("Encryption failed: {}", e))?;
+        eprintln!("   📏 Encrypted length header: {} bytes -> {} bytes", length_bytes.len(), encrypted_header.len());
         
-        Ok(ciphertext)
+        // Step 2: Encrypt the message body
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&self.send_nonce.to_le_bytes());
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        self.send_nonce = self.send_nonce.checked_add(1).ok_or("Send nonce overflow")?;
+        
+        let encrypted_body = cipher.encrypt(nonce, plaintext)
+            .map_err(|e| format!("Failed to encrypt body: {}", e))?;
+        
+        eprintln!("   📦 Encrypted body: {} bytes -> {} bytes", plaintext.len(), encrypted_body.len());
+        
+        // Combine header + body
+        let mut result = Vec::with_capacity(encrypted_header.len() + encrypted_body.len());
+        result.extend_from_slice(&encrypted_header);
+        result.extend_from_slice(&encrypted_body);
+        
+        Ok(result)
     }
     
     /// Decrypt a message using the recv cipher and implicit nonce
+    /// Implements the Noise Machine's length-prefixed framing:
+    /// 1. Decrypt 18-byte length header -> 2 bytes length
+    /// 2. Decrypt (length + 16) bytes body -> length bytes plaintext
     pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         let cipher = self.recv_cipher.as_ref()
             .ok_or("Recv cipher not initialized")?;
-            
+        
+        // Minimum size: 18 bytes (encrypted header with MAC)
+        if ciphertext.len() < 18 {
+            return Err(format!("Ciphertext too short: {} bytes (need at least 18)", ciphertext.len()).into());
+        }
+        
+        // Step 1: Decrypt the length header (first 18 bytes: 2 bytes + 16-byte MAC)
+        let encrypted_header = &ciphertext[0..18];
+        
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&self.recv_nonce.to_le_bytes());
         let nonce = Nonce::from_slice(&nonce_bytes);
+        self.recv_nonce = self.recv_nonce.checked_add(1).ok_or("Recv nonce overflow")?;
         
-        // Increment nonce after use
-        self.recv_nonce = self.recv_nonce.checked_add(1)
-            .ok_or("Recv nonce overflow")?;
-            
-        // Decrypt (Expects ciphertext + tag, no nonce)
-        let plaintext = cipher.decrypt(nonce, ciphertext)
-            .map_err(|e| format!("Decryption failed: {}", e))?;
+        let length_bytes = cipher.decrypt(nonce, encrypted_header)
+            .map_err(|e| format!("Failed to decrypt length header: {}", e))?;
+        
+        if length_bytes.len() != 2 {
+            return Err(format!("Invalid length header size: {}", length_bytes.len()).into());
+        }
+        
+        let expected_length = u16::from_be_bytes([length_bytes[0], length_bytes[1]]) as usize;
+        eprintln!("   📏 Decrypted length header: expecting {} bytes of data", expected_length);
+        
+        // Step 2: Decrypt the body (expected_length + 16-byte MAC)
+        let expected_body_len = expected_length + 16;
+        if ciphertext.len() < 18 + expected_body_len {
+            return Err(format!(
+                "Incomplete message: have {} bytes, need {} (18 header + {} body)",
+                ciphertext.len(), 18 + expected_body_len, expected_body_len
+            ).into());
+        }
+        
+        let encrypted_body = &ciphertext[18..18 + expected_body_len];
+        
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&self.recv_nonce.to_le_bytes());
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        self.recv_nonce = self.recv_nonce.checked_add(1).ok_or("Recv nonce overflow")?;
+        
+        let plaintext = cipher.decrypt(nonce, encrypted_body)
+            .map_err(|e| format!("Failed to decrypt body: {}", e))?;
+        
+        eprintln!("🔓 Decrypted {} bytes from server: {:02x?}", plaintext.len(), &plaintext[..plaintext.len().min(50)]);
+        
+        if plaintext.len() != expected_length {
+            return Err(format!(
+                "Length mismatch: header said {} bytes, but got {} bytes",
+                expected_length, plaintext.len()
+            ).into());
+        }
         
         Ok(plaintext)
     }
@@ -879,6 +951,12 @@ impl LNCMailbox {
                                 let connection = MailboxConnection {
                                     gobn: Arc::new(Mutex::new(gobn)),
                                     mailbox: Arc::new(Mutex::new(self.clone())),
+                                    read_buffer: Arc::new(Mutex::new(Vec::new())),
+                                    write_buffer: Arc::new(Mutex::new(Vec::new())),
+                                    encrypted_buffer: Arc::new(Mutex::new(Vec::new())),
+                                    reading: Arc::new(Mutex::new(false)),
+                                    read_error: Arc::new(Mutex::new(None)),
+                                    writing: Arc::new(Mutex::new(false)),
                                 };
                                 
                                 let connection_arc = Arc::new(Mutex::new(connection));
@@ -1018,6 +1096,12 @@ impl LNCMailbox {
                     let connection = MailboxConnection {
                         gobn: Arc::new(Mutex::new(gobn)),
                         mailbox: Arc::new(Mutex::new(self.clone())),
+                        read_buffer: Arc::new(Mutex::new(Vec::new())),
+                        write_buffer: Arc::new(Mutex::new(Vec::new())),
+                        encrypted_buffer: Arc::new(Mutex::new(Vec::new())),
+                        reading: Arc::new(Mutex::new(false)),
+                        read_error: Arc::new(Mutex::new(None)),
+                        writing: Arc::new(Mutex::new(false)),
                     };
                     
                     let connection_arc = Arc::new(Mutex::new(connection));
@@ -1548,6 +1632,9 @@ struct NoiseHandshakeState {
     cipher_nonce: u64,
     
     version: u8,
+    
+    /// Authentication data received from server in Act 2
+    auth_data: Option<String>,
 }
 
 
@@ -1566,6 +1653,7 @@ impl Clone for NoiseHandshakeState {
             cipher: self.cipher.as_ref().map(|_| ChaCha20Poly1305::new(&self.temp_key.into())),
             cipher_nonce: self.cipher_nonce,
             version: self.version,
+            auth_data: self.auth_data.clone(),
         }
     }
 }
@@ -1602,6 +1690,7 @@ impl NoiseHandshakeState {
             cipher: Some(ChaCha20Poly1305::new(&[0u8; 32].into())),
             cipher_nonce: 0,
             version: 2, // Default to Version 2 as server uses it
+            auth_data: None,
         })
     }
     
@@ -1707,12 +1796,14 @@ impl NoiseHandshakeState {
         )?;
         self.mix_key(&es);
         
-        // Read and decrypt payload (if any)
+        // Read and decrypt payload (if any) - this contains authentication data
         offset += encrypted_static_size;
-        if self.version == 0 {
+        let auth_payload = if self.version == 0 {
             // Version 0: Fixed 500 byte payload
             if offset + 516 <= data.len() {
-                let _payload = self.decrypt_and_hash(&data[offset..offset+516])?;
+                Some(self.decrypt_and_hash(&data[offset..offset+516])?)
+            } else {
+                None
             }
         } else {
             // Version 1/2: Length-prefixed payload
@@ -1721,9 +1812,20 @@ impl NoiseHandshakeState {
                 let payload_len = u32::from_be_bytes(len_bytes[..4].try_into().unwrap()) as usize;
                 offset += 20;
                 if offset + payload_len + 16 <= data.len() {
-                    let _payload = self.decrypt_and_hash(&data[offset..offset+payload_len+16])?;
+                    Some(self.decrypt_and_hash(&data[offset..offset+payload_len+16])?)
+                } else {
+                    None
                 }
+            } else {
+                None
             }
+        };
+        
+        // Store authentication data from Act 2 payload
+        if let Some(payload) = auth_payload {
+            let auth_str = String::from_utf8_lossy(&payload).to_string();
+            eprintln!("🔐 Received authentication data in Act 2: {}", auth_str);
+            self.auth_data = Some(auth_str);
         }
         
         Ok(())
@@ -1983,6 +2085,11 @@ impl LNCMailbox {
         state.act2(&act2_buf)?;
         eprintln!("✅ Noise Act 2: Received and processed server response");
         
+        // Transfer auth data from state to self
+        if let Some(auth_data) = state.auth_data.clone() {
+            self.auth_data = Some(auth_data);
+        }
+        
         // Act 3: Send our static key and complete handshake
         eprintln!("📤 Noise Act 3: Sending static key...");
         let act3_msg = state.act3()?;
@@ -2083,6 +2190,7 @@ impl Clone for LNCMailbox {
             recv_key: self.recv_key,
             send_nonce: self.send_nonce,
             recv_nonce: self.recv_nonce,
+            auth_data: self.auth_data.clone(),
             connection: None,
         }
     }
@@ -2093,11 +2201,30 @@ pub struct MailboxConnection {
     // GoBN connection handles all the transport logic (ACKs, PINGs, MsgData wrapping)
     gobn: Arc<Mutex<GoBNConnection>>,
     mailbox: Arc<Mutex<LNCMailbox>>,
+    
+    // Buffering for AsyncRead/AsyncWrite implementation
+    read_buffer: Arc<Mutex<Vec<u8>>>,        // Decrypted plaintext ready to read
+    write_buffer: Arc<Mutex<Vec<u8>>>,
+    
+    // Buffer for incomplete Noise frames (encrypted data)
+    // Messages may be split across multiple GoBN packets, so we need to accumulate
+    // encrypted bytes until we have a complete frame (18-byte header + body)
+    encrypted_buffer: Arc<Mutex<Vec<u8>>>,
+    
+    // Track if we're currently reading to avoid spawning multiple read tasks
+    reading: Arc<Mutex<bool>>,
+    // Store read error if one occurred
+    read_error: Arc<Mutex<Option<String>>>,
+    // Track if we're currently writing
+    writing: Arc<Mutex<bool>>,
 }
 
 impl MailboxConnection {
     /// Send an encrypted message through the mailbox
     pub async fn send_encrypted(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
+        eprintln!("🔒 Encrypting {} bytes for transmission", data.len());
+        eprintln!("   First 20 bytes (plaintext): {:02x?}", &data[..data.len().min(20)]);
+        
         let mut mailbox = self.mailbox.lock().await;
         // Encrypt with Noise cipher
         let encrypted = mailbox.encrypt(data)?; // removed await as encrypt is now synchronous
@@ -2120,11 +2247,315 @@ impl MailboxConnection {
         let noise_msg = gobn.read_msg().await?;
         drop(gobn);
         
+        eprintln!("🔓 Decrypting {} bytes of noise message", noise_msg.len());
+        
         // Decrypt with Noise cipher
         let mut mailbox = self.mailbox.lock().await;
         let decrypted = mailbox.decrypt(&noise_msg)?;
         
+        eprintln!("✅ Decrypted to {} bytes: {:02x?}", decrypted.len(), &decrypted[..decrypted.len().min(50)]);
+        
         Ok(decrypted)
+    }
+}
+
+// Implement AsyncRead for MailboxConnection
+impl tokio::io::AsyncRead for MailboxConnection {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        
+        // Check if there was a read error
+        if let Ok(mut error_opt) = this.read_error.try_lock() {
+            if let Some(error_msg) = error_opt.take() {
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    error_msg
+                )));
+            }
+        }
+        
+        // Try to get data from read buffer first
+        let mut read_buffer = match this.read_buffer.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+        };
+        
+        if !read_buffer.is_empty() {
+            let to_read = std::cmp::min(buf.remaining(), read_buffer.len());
+            buf.put_slice(&read_buffer[..to_read]);
+            read_buffer.drain(..to_read);
+            return std::task::Poll::Ready(Ok(()));
+        }
+        drop(read_buffer);
+        
+        // Check if we're already reading (avoid spawning multiple tasks)
+        let mut is_reading = match this.reading.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+        };
+        
+        if *is_reading {
+            // Already reading, just wait
+            drop(is_reading);
+            return std::task::Poll::Pending;
+        }
+        
+        // Mark that we're reading
+        *is_reading = true;
+        drop(is_reading);
+        
+        // Buffer is empty, need to read from connection
+        let gobn = Arc::clone(&this.gobn);
+        let mailbox = Arc::clone(&this.mailbox);
+        let read_buf_arc = Arc::clone(&this.read_buffer);
+        let encrypted_buf_arc = Arc::clone(&this.encrypted_buffer);
+        let reading_flag = Arc::clone(&this.reading);
+        let error_arc = Arc::clone(&this.read_error);
+        
+        let waker = cx.waker().clone();
+        tokio::spawn(async move {
+            let result = async {
+                // Read one GoBN packet (which contains encrypted Noise data)
+                let mut gobn_guard = gobn.lock().await;
+                let noise_encrypted = gobn_guard.read_msg().await?;
+                drop(gobn_guard);
+                
+                eprintln!("📥 Received {} bytes of encrypted Noise data: {:02x?}", noise_encrypted.len(), &noise_encrypted[..noise_encrypted.len().min(20)]);
+                
+                // Add to encrypted buffer
+                let mut enc_buf = encrypted_buf_arc.lock().await;
+                enc_buf.extend_from_slice(&noise_encrypted);
+                
+                eprintln!("   🔢 Encrypted buffer now has {} bytes", enc_buf.len());
+                
+                // Try to decrypt complete frames from the buffer
+                // IMPORTANT: Only attempt decryption when we have enough bytes for a complete frame
+                loop {
+                    // Need at least 18 bytes for the length header
+                    if enc_buf.len() < 18 {
+                        eprintln!("   ⏳ Not enough data yet (need 18 bytes for header)");
+                        break;
+                    }
+                    
+                    // PEEK at the length header WITHOUT decrypting yet
+                    // We need to check if we have enough bytes for the complete frame BEFORE
+                    // attempting decryption (which would increment nonces)
+                    
+                    // To peek at the length, we need to manually decrypt just the header
+                    // This is a bit tricky because decrypt() does both header and body
+                    // For now, we'll use a heuristic: if decrypt fails with "Incomplete message",
+                    // we know we need more data
+                    
+                    // Clone the buffer to test decryption
+                    let encrypted_data = enc_buf.clone();
+                    let enc_buf_len_before = enc_buf.len();
+                    
+                    // Save the current nonces before attempting decryption
+                    let mut mailbox_guard = mailbox.lock().await;
+                    let recv_nonce_before = mailbox_guard.recv_nonce;
+                    
+                    match mailbox_guard.decrypt(&encrypted_data) {
+                        Ok(decrypted) => {
+                            // Success! We had a complete frame
+                            // Calculate how many bytes were consumed
+                            let header_len = 18;
+                            let body_len = decrypted.len() + 16; // plaintext + MAC
+                            let total_consumed = header_len + body_len;
+                            
+                            eprintln!("   ✅ Successfully decrypted {} bytes (consumed {} encrypted bytes)", decrypted.len(), total_consumed);
+                            
+                            // Remove consumed bytes from encrypted buffer
+                            enc_buf.drain(..total_consumed);
+                            drop(enc_buf);
+                            drop(mailbox_guard);
+                            
+                            // Add decrypted data to read buffer
+                            let mut read_buf = read_buf_arc.lock().await;
+                            read_buf.extend_from_slice(&decrypted);
+                            drop(read_buf);
+                            
+                            // Continue to see if there's another complete frame
+                            enc_buf = encrypted_buf_arc.lock().await;
+                            mailbox_guard = mailbox.lock().await;
+                        }
+                        Err(e) => {
+                            // Incomplete frame - need more data
+                            if e.to_string().contains("Incomplete message") {
+                                eprintln!("   ⏳ Incomplete frame, waiting for more data");
+                                
+                                // CRITICAL: Restore the nonce since we didn't successfully complete the operation
+                                mailbox_guard.recv_nonce = recv_nonce_before;
+                                eprintln!("   🔄 Restored recv_nonce to {} (was incremented during failed attempt)", recv_nonce_before);
+                                
+                                break;
+                            } else {
+                                // Real decryption error - could be connection closing or corrupted data
+                                eprintln!("   ❌ Decryption error: {}", e);
+                                eprintln!("   📊 Encrypted buffer contents ({} bytes): {:02x?}", enc_buf.len(), &enc_buf[..enc_buf.len().min(50)]);
+                                eprintln!("   🔢 Buffer length: {}, Nonce before: {}, Nonce after: {}", enc_buf_len_before, recv_nonce_before, mailbox_guard.recv_nonce);
+                                
+                                // Check if this might be a connection close or error message
+                                // If buffer is very small (< 18 bytes), it's not a valid Noise frame
+                                if enc_buf.len() < 18 {
+                                    eprintln!("   💡 Buffer too small for Noise frame, might be connection closing");
+                                    // Clear the buffer and break - don't propagate as error yet
+                                    enc_buf.clear();
+                                    break;
+                                }
+                                
+                                drop(enc_buf);
+                                drop(mailbox_guard);
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+                
+                Ok::<(), Box<dyn Error + Send + Sync>>(())
+            }.await;
+            
+            match result {
+                Ok(_) => {
+                    // Successfully processed data
+                }
+                Err(e) => {
+                    eprintln!("Error reading from mailbox: {}", e);
+                    let mut error = error_arc.lock().await;
+                    *error = Some(e.to_string());
+                }
+            }
+            
+            // Mark that we're done reading
+            let mut reading = reading_flag.lock().await;
+            *reading = false;
+            
+            waker.wake();
+        });
+        
+        std::task::Poll::Pending
+    }
+}
+
+// Implement AsyncWrite for MailboxConnection  
+impl tokio::io::AsyncWrite for MailboxConnection {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        
+        // Add to write buffer
+        let mut write_buffer = match this.write_buffer.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+        };
+        
+        eprintln!("📝 poll_write: Adding {} bytes to write_buffer (total will be {} bytes)", 
+                  buf.len(), write_buffer.len() + buf.len());
+        write_buffer.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+    
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        
+        // Check if we're already writing
+        let mut writing_guard = match this.writing.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+        };
+        
+        if *writing_guard {
+            // Still writing from previous flush
+            return std::task::Poll::Pending;
+        }
+        
+        let mut write_buffer = match this.write_buffer.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+        };
+        
+        if write_buffer.is_empty() {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        
+        eprintln!("📤 poll_flush: Flushing {} bytes from write_buffer", write_buffer.len());
+        
+        let data = write_buffer.clone();
+        write_buffer.clear();
+        drop(write_buffer);
+        
+        *writing_guard = true;
+        drop(writing_guard);
+        
+        let gobn = Arc::clone(&this.gobn);
+        let mailbox = Arc::clone(&this.mailbox);
+        let writing = Arc::clone(&this.writing);
+        let waker = cx.waker().clone();
+        
+        tokio::spawn(async move {
+            let result = async {
+                let mut mailbox_guard = mailbox.lock().await;
+                let encrypted = mailbox_guard.encrypt(&data)?;
+                drop(mailbox_guard);
+                
+                eprintln!("📤 poll_flush task: Sending {} encrypted bytes via GoBN", encrypted.len());
+                let mut gobn_guard = gobn.lock().await;
+                gobn_guard.write_msg(&encrypted).await?;
+                gobn_guard.flush().await?;
+                eprintln!("✅ poll_flush task: Successfully sent and flushed");
+                
+                Ok::<(), Box<dyn Error + Send + Sync>>(())
+            }.await;
+            
+            let mut writing_guard = writing.lock().await;
+            *writing_guard = false;
+            drop(writing_guard);
+            
+            match result {
+                Ok(_) => {
+                    eprintln!("✅ poll_flush task completed successfully");
+                    waker.wake();
+                },
+                Err(e) => {
+                    eprintln!("❌ Error in poll_flush task: {}", e);
+                    waker.wake();
+                }
+            }
+        });
+        
+        std::task::Poll::Pending
+    }
+    
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        // For now, just return Ready - proper shutdown would close the GoBN connection
+        std::task::Poll::Ready(Ok(()))
     }
 }
 

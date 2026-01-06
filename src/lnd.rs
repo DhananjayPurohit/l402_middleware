@@ -421,76 +421,206 @@ impl lnclient::LNClient for LNDWrapper {
 }
 
 impl LNDWrapper {
-    /// Add invoice through LNC mailbox connection
+    /// Add invoice through LNC mailbox connection using proper gRPC client
     async fn add_invoice_via_lnc(
         mailbox: Arc<Mutex<lnc::LNCMailbox>>,
         invoice: lnrpc::Invoice,
     ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>> {
-        use prost::Message;
-        
         // Get or create the mailbox connection (lazy connection)
         let mut mailbox_guard = mailbox.lock().await;
-        let connection = mailbox_guard.get_connection().await?;
+        let connection_arc = mailbox_guard.get_connection().await?;
+        
+        // Extract auth_data for gRPC metadata
+        let auth_data = mailbox_guard.auth_data.clone();
         drop(mailbox_guard);
         
-        // Serialize the invoice request using protobuf
-        let mut buf = Vec::new();
-        invoice.encode(&mut buf)
-            .map_err(|e| format!("Failed to encode invoice: {}", e))?;
+        // Extract the connection (we need ownership for the connector)
+        // Note: This limits us to one gRPC call at a time, but that's okay for now
+        let connection = {
+            let mut conn_guard = connection_arc.lock().await;
+            // We can't move out of Arc<Mutex>, so we'll keep the Arc and use it in wrapper
+            drop(conn_guard);
+            connection_arc
+        };
         
-        // Create gRPC frame (no HTTP/2 headers - just raw gRPC framing)
-        // gRPC format: [compressed flag (1 byte)][message length (4 bytes)][message]
-        let mut grpc_frame = Vec::new();
-        grpc_frame.push(0); // Not compressed
-        grpc_frame.extend_from_slice(&(buf.len() as u32).to_be_bytes());
-        grpc_frame.extend_from_slice(&buf);
+        // Create a connector using tower::service_fn (same pattern as SOCKS5 connection)
+        let connector = tower::service_fn(move |_uri: http::Uri| {
+            let conn = Arc::clone(&connection);
+            async move {
+                eprintln!("🔌 Using mailbox connection for gRPC transport");
+                // Create a wrapper that implements AsyncRead/AsyncWrite
+                // The wrapper will handle locking internally when needed
+                Ok::<MailboxConnectionWrapper, std::io::Error>(
+                    MailboxConnectionWrapper { connection: conn }
+                )
+            }
+        });
         
-        eprintln!("📤 Sending gRPC request: /lnrpc.Lightning/AddInvoice ({} bytes)", grpc_frame.len());
+        // Create a tonic channel using the mailbox as transport
+        // The URI must be a valid gRPC target for the LND node (even though the actual
+        // connection goes through the mailbox). Use a dummy localhost address.
+        // Use http:// (not https://) since we already have encryption via Noise
+        let channel = Endpoint::from_static("http://lightning.local:10009")
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .connect_with_connector(connector)
+            .await
+            .map_err(|e| format!("Failed to create gRPC channel: {}", e))?;
         
-        // Send through mailbox connection (Noise encrypts, GoBN frames)
-        let connection_guard = connection.lock().await;
-        connection_guard.send_encrypted(&grpc_frame).await?;
+        // Create a Lightning gRPC client
+        let mut lightning_client = lnrpc::lightning_client::LightningClient::new(channel);
         
-        // Receive response
-        let response_data = connection_guard.receive_encrypted().await?;
-        drop(connection_guard);
+        // Give the connection a moment to settle after handshake
+        // The server might be sending initial HTTP/2 frames (SETTINGS, etc.)
+        eprintln!("⏳ Waiting 100ms for server to send initial frames...");
+        tokio::time::sleep(Duration::from_millis(100)).await;
         
-        eprintln!("📥 Received gRPC response: {} bytes", response_data.len());
+        // Try GetInfo first as a simpler test
+        eprintln!("📤 Testing connection with GetInfo RPC call");
+        let mut get_info_request = Request::new(lnrpc::GetInfoRequest{});
         
-        // Parse gRPC response (raw gRPC frame, no HTTP/2 headers)
-        let response_message = Self::parse_grpc_response(&response_data)?;
+        // Add authentication headers from Act 2 payload
+        if let Some(ref auth_str) = auth_data {
+            eprintln!("🔑 Adding authentication metadata from Act 2");
+            let metadata = get_info_request.metadata_mut();
+            
+            // Parse auth_data: "Header1: value1\r\nHeader2: value2"
+            for line in auth_str.split("\r\n") {
+                if let Some((key, value)) = line.split_once(": ") {
+                    // Convert to lowercase ASCII (gRPC metadata keys must be lowercase)
+                    let key_lower = key.to_lowercase();
+                    match (
+                        tonic::metadata::MetadataKey::from_bytes(key_lower.as_bytes()),
+                        tonic::metadata::AsciiMetadataValue::try_from(value)
+                    ) {
+                        (Ok(metadata_key), Ok(metadata_value)) => {
+                            metadata.insert(metadata_key, metadata_value);
+                            eprintln!("   ✅ Added metadata: {} = {}", key_lower, value);
+                        }
+                        (Err(e), _) => eprintln!("   ⚠️  Invalid metadata key '{}': {}", key, e),
+                        (_, Err(e)) => eprintln!("   ⚠️  Invalid metadata value for '{}': {}", key, e),
+                    }
+                }
+            }
+        } else {
+            eprintln!("⚠️  No authentication data received from server!");
+        }
         
-        // Decode protobuf response
-        let add_invoice_response = lnrpc::AddInvoiceResponse::decode(&mut response_message.as_slice())
-            .map_err(|e| format!("Failed to decode response: {}", e))?;
+        match lightning_client.get_info(get_info_request).await {
+            Ok(info_response) => {
+                eprintln!("✅ GetInfo successful!");
+                eprintln!("   Node identity: {}", info_response.get_ref().identity_pubkey);
+                eprintln!("   Alias: {}", info_response.get_ref().alias);
+            }
+            Err(e) => {
+                eprintln!("❌ GetInfo failed: {}", e);
+                return Err(format!("GetInfo failed: {}", e).into());
+            }
+        }
+        
+        // Now call AddInvoice
+        eprintln!("📤 Sending gRPC request: /lnrpc.Lightning/AddInvoice");
+        let mut request = Request::new(invoice);
+        
+        // Add authentication headers from Act 2 payload
+        if let Some(auth_str) = auth_data {
+            let metadata = request.metadata_mut();
+            
+            // Parse auth_data: "Header1: value1\r\nHeader2: value2"
+            for line in auth_str.split("\r\n") {
+                if let Some((key, value)) = line.split_once(": ") {
+                    // Convert to lowercase ASCII (gRPC metadata keys must be lowercase)
+                    let key_lower = key.to_lowercase();
+                    match (
+                        tonic::metadata::MetadataKey::from_bytes(key_lower.as_bytes()),
+                        tonic::metadata::AsciiMetadataValue::try_from(value)
+                    ) {
+                        (Ok(metadata_key), Ok(metadata_value)) => {
+                            metadata.insert(metadata_key, metadata_value);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        let response = lightning_client.add_invoice(request)
+            .await
+            .map_err(|e| {
+                eprintln!("❌ gRPC call error details: {:?}", e);
+                eprintln!("💡 Hint: The server closed the connection. This might be because:");
+                eprintln!("   1. The HTTP/2 negotiation failed");
+                eprintln!("   2. The server doesn't recognize the request format");
+                eprintln!("   3. There's a protocol mismatch");
+                format!("gRPC call failed: {}", e)
+            })?;
         
         eprintln!("✅ LNC AddInvoice successful");
-        Ok(add_invoice_response)
+        Ok(response.into_inner())
+    }
+}
+
+/// Wrapper around Arc<Mutex<MailboxConnection>> that implements AsyncRead + AsyncWrite for tonic transport
+struct MailboxConnectionWrapper {
+    connection: Arc<Mutex<lnc::MailboxConnection>>,
+}
+
+impl AsyncRead for MailboxConnectionWrapper {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        // Try to lock and delegate
+        match self.connection.try_lock() {
+            Ok(mut conn) => Pin::new(&mut *conn).poll_read(cx, buf),
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl AsyncWrite for MailboxConnectionWrapper {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.connection.try_lock() {
+            Ok(mut conn) => Pin::new(&mut *conn).poll_write(cx, buf),
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
     }
     
-    /// Parse a gRPC response message (raw gRPC frame, no HTTP/2 headers)
-    fn parse_grpc_response(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        if data.len() < 5 {
-            return Err("Response too short for gRPC frame".into());
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.connection.try_lock() {
+            Ok(mut conn) => Pin::new(&mut *conn).poll_flush(cx),
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
         }
-        
-        // Parse gRPC frame: [compressed flag][message length (4 bytes)][message]
-        let _compressed = data[0];
-        let message_len = u32::from_be_bytes([
-            data[1],
-            data[2],
-            data[3],
-            data[4],
-        ]) as usize;
-        
-        let message_start = 5;
-        let message_end = message_start + message_len;
-        
-        if data.len() < message_end {
-            return Err(format!("Response message incomplete: expected {} bytes, got {}", message_end, data.len()).into());
+    }
+    
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.connection.try_lock() {
+            Ok(mut conn) => Pin::new(&mut *conn).poll_shutdown(cx),
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
         }
-        
-        Ok(data[message_start..message_end].to_vec())
     }
 }
 
