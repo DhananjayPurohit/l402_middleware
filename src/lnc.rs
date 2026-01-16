@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tokio_tungstenite::{connect_async_with_config, tungstenite::{protocol::Message, handshake::client::generate_key, http::Request}};
+use tokio_tungstenite::{connect_async, tungstenite::{protocol::Message, handshake::client::generate_key, http::Request}};
 use futures_util::{StreamExt, SinkExt, FutureExt};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -370,7 +370,8 @@ pub fn parse_pairing_phrase(phrase: &str) -> Result<LNCPairingData, Box<dyn Erro
         passphrase_entropy: passphrase_entropy.to_vec(),
         stream_id,
         local_keypair: keypair,
-        mailbox_server: "wss://mailbox.terminal.lightning.today".to_string(),
+        mailbox_server: std::env::var("LNC_MAILBOX_SERVER")
+            .unwrap_or_else(|_| "ws://127.0.0.1:8085".to_string()),
     })
 }
 
@@ -396,7 +397,8 @@ pub fn parse_pairing_phrase_from_entropy(entropy_hex: &str) -> Result<LNCPairing
         passphrase_entropy,
         stream_id,
         local_keypair: keypair,
-        mailbox_server: "wss://mailbox.terminal.lightning.today".to_string(),
+        mailbox_server: std::env::var("LNC_MAILBOX_SERVER")
+            .unwrap_or_else(|_| "ws://127.0.0.1:8085".to_string()),
     })
 }
 
@@ -2132,20 +2134,9 @@ impl LNCMailbox {
         &self,
         url: &str,
     ) -> Result<(futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>, futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>), Box<dyn Error + Send + Sync>> {
-        // Note: Don't set Sec-WebSocket-Protocol as the mailbox server doesn't expect it
-        let request = Request::builder()
-            .uri(url)
-            .header("Host", "mailbox.terminal.lightning.today")
-            .header("Connection", "Upgrade")
-            .header("Upgrade", "websocket")
-            .header("Sec-WebSocket-Version", "13")
-            .header("Sec-WebSocket-Key", generate_key())
-            .body(())
-            .map_err(|e| format!("Failed to build request: {}", e))?;
-        
-        let (ws_stream, response) = connect_async_with_config(request, None, false).await
-            .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
-        eprintln!("✅ Connected (HTTP status: {})", response.status());
+        let (ws_stream, _) = connect_async(url).await.map_err(|e| {
+            format!("WebSocket connection failed for {}: {}", url, e)
+        })?;
         let (write, read) = ws_stream.split();
         Ok((write, read))
     }
@@ -2165,11 +2156,11 @@ impl LNCMailbox {
     }
     
     fn mailbox_recv_url(&self) -> String {
-        format!("{}/v1/lightning-node-connect/hashmail/receive?method=POST", self.mailbox_base_url())
+        format!("{}/v1/lightning-node-connect/hashmail/receive", self.mailbox_base_url())
     }
     
     fn mailbox_send_url(&self) -> String {
-        format!("{}/v1/lightning-node-connect/hashmail/send?method=POST", self.mailbox_base_url())
+        format!("{}/v1/lightning-node-connect/hashmail/send", self.mailbox_base_url())
     }
 }
 

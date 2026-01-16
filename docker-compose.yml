@@ -80,61 +80,54 @@ services:
     image: lightninglabs/lightning-terminal:v0.16.0-alpha
     container_name: litd
     user: root
-    hostname: litd
     entrypoint:
       - sh
       - -c
       - |
-        echo "Starting litd in INTEGRATED mode..."
-        echo "litd will run its own LND instance for LNC functionality"
-        echo "Using LOCAL mailbox server (hashmail) at hashmail:8081"
-        echo "Separate lndnode container remains available for other tests"
-        
-        # Wait for hashmail to be ready
-        sleep 5
-        
-        # Start litd in integrated mode with local mailbox server
-        exec litd \
-          --lnd-mode=integrated \
-          --network=regtest \
+        # Wait for LND to be ready
+        echo "Waiting for LND to be ready..."
+        sleep 30
+        while [ ! -f /data/.lnd/tls.cert ]; do
+          echo "Waiting for LND TLS cert..."
+          sleep 5
+        done
+        while [ ! -f /data/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
+          echo "Waiting for LND admin macaroon..."
+          sleep 5
+        done
+        echo "LND files found, starting litd..."
+        echo "Starting litd with LND connection to lnd:10009..."
+        exec litd --lnd-mode=remote --network=regtest \
+          --remote.lnd.rpcserver=lnd:10009 \
+          --remote.lnd.macaroonpath=/data/.lnd/data/chain/bitcoin/regtest/admin.macaroon \
+          --remote.lnd.tlscertpath=/data/.lnd/tls.cert \
           --httpslisten=0.0.0.0:8443 \
           --uipassword=password123 \
           --lit-dir=/root/.lit \
           --autopilot.disable \
-          --lnd.listen=0.0.0.0:9736 \
-          --lnd.rpclisten=0.0.0.0:10010 \
-          --lnd.restlisten=0.0.0.0:8082 \
-          --lnd.bitcoin.active \
-          --lnd.bitcoin.regtest \
-          --lnd.bitcoin.node=bitcoind \
-          --lnd.bitcoind.rpchost=bitcoind:18443 \
-          --lnd.bitcoind.rpcuser=user \
-          --lnd.bitcoind.rpcpass=pass \
-          --lnd.bitcoind.zmqpubrawblock=tcp://bitcoind:28332 \
-          --lnd.bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+          --remote.lit-debuglevel=trace
     ports:
-      - "8443:8443"   # litd UI
-      - "10010:10010" # litd's LND gRPC (different from lndnode's 10009)
-      - "9736:9736"   # litd's LND P2P (different from lndnode's 9735)
-      - "8081:8081"   # litd's LND REST (different from lndnode's 8080)
+      - "8443:8443"
     volumes:
+      - lndnode-data:/data/.lnd
       - litd-data:/root/.lit
-      - litd-lnd-data:/root/.lnd
     depends_on:
-      - bitcoind
-      - hashmail
+      - lndnode
     restart: unless-stopped
 
   hashmail:
-    image: lightninglabs/aperture:v0.2.5-beta
+    image: lightninglabs/lightning-terminal:v0.16.0-alpha
     container_name: hashmail
+    entrypoint: ["aperture"]
     command:
-      - aperture
-      - --debuglevel=debug
-      - --listenaddr=0.0.0.0:8081
-      - --insecure
+      - --insecure-httplisten=0.0.0.0:443
+      - --uipassword=password123
+    networks:
+      default:
+        aliases:
+          - mailbox.terminal.lightning.today
     ports:
-      - "8081:8081"
+      - "8085:443"
     restart: unless-stopped
 
   cln:
@@ -177,6 +170,6 @@ volumes:
   bitcoin_data:
   lndnode-data:
   litd-data:
-  litd-lnd-data:  # Separate volume for litd's integrated LND
   cln-data:
   tor-data:
+

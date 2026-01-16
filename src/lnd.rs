@@ -483,7 +483,7 @@ impl LNDWrapper {
         if let Some(ref auth_str) = auth_data {
             eprintln!("🔑 Adding authentication metadata from Act 2");
             let metadata = get_info_request.metadata_mut();
-            
+        
             // Parse auth_data: "Header1: value1\r\nHeader2: value2"
             for line in auth_str.split("\r\n") {
                 if let Some((key, value)) = line.split_once(": ") {
@@ -558,8 +558,8 @@ impl LNDWrapper {
         eprintln!("✅ LNC AddInvoice successful");
         Ok(response.into_inner())
     }
-}
-
+    }
+    
 /// Wrapper around Arc<Mutex<MailboxConnection>> that implements AsyncRead + AsyncWrite for tonic transport
 struct MailboxConnectionWrapper {
     connection: Arc<Mutex<lnc::MailboxConnection>>,

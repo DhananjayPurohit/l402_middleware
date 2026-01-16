@@ -32,6 +32,9 @@ serde_json = "1.0"
 sha2 = "0.10"
 tokio = { version = "1.40.0", features = ["net", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+# rustls, webpki-roots removed as we are reverting to insecure for debugging
+# rustls = "0.22"
+# webpki-roots = "0.26"
 tonic = "0.7"
 tonic-openssl = "0.2"
 tonic_openssl_lnd = "0.2.0"
