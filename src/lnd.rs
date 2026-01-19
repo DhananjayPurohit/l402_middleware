@@ -457,10 +457,10 @@ impl LNDWrapper {
         });
         
         // Create a tonic channel using the mailbox as transport
-        // The URI must be a valid gRPC target for the LND node (even though the actual
-        // connection goes through the mailbox). Use a dummy localhost address.
+        // Use a generic URI - the actual connection goes through our custom connector.
+        // The :authority header will be set to this value.
         // Use http:// (not https://) since we already have encryption via Noise
-        let channel = Endpoint::from_static("http://lightning.local:10009")
+        let channel = Endpoint::from_static("http://localhost:10009")
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(10))
             .connect_with_connector(connector)
@@ -470,76 +470,47 @@ impl LNDWrapper {
         // Create a Lightning gRPC client
         let mut lightning_client = lnrpc::lightning_client::LightningClient::new(channel);
         
-        // Give the connection a moment to settle after handshake
-        // The server might be sending initial HTTP/2 frames (SETTINGS, etc.)
-        eprintln!("⏳ Waiting 100ms for server to send initial frames...");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Wait longer for HTTP/2 SETTINGS exchange to complete
+        // This ensures server SETTINGS are received and ACKed before we send any requests
+        eprintln!("⏳ Waiting for HTTP/2 SETTINGS exchange...");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        eprintln!("✅ Sleep complete, proceeding with GetInfo");
         
-        // Try GetInfo first as a simpler test
-        eprintln!("📤 Testing connection with GetInfo RPC call");
+        eprintln!("📤 Establishing connection with GetInfo...");
         let mut get_info_request = Request::new(lnrpc::GetInfoRequest{});
         
-        // Add authentication headers from Act 2 payload
+        // Add authentication metadata
         if let Some(ref auth_str) = auth_data {
-            eprintln!("🔑 Adding authentication metadata from Act 2");
             let metadata = get_info_request.metadata_mut();
-        
-            // Parse auth_data: "Header1: value1\r\nHeader2: value2"
-            for line in auth_str.split("\r\n") {
-                if let Some((key, value)) = line.split_once(": ") {
-                    // Convert to lowercase ASCII (gRPC metadata keys must be lowercase)
-                    let key_lower = key.to_lowercase();
-                    match (
-                        tonic::metadata::MetadataKey::from_bytes(key_lower.as_bytes()),
-                        tonic::metadata::AsciiMetadataValue::try_from(value)
-                    ) {
-                        (Ok(metadata_key), Ok(metadata_value)) => {
-                            metadata.insert(metadata_key, metadata_value);
-                            eprintln!("   ✅ Added metadata: {} = {}", key_lower, value);
-                        }
-                        (Err(e), _) => eprintln!("   ⚠️  Invalid metadata key '{}': {}", key, e),
-                        (_, Err(e)) => eprintln!("   ⚠️  Invalid metadata value for '{}': {}", key, e),
-                    }
+            if let Some(macaroon_hex) = auth_str.strip_prefix("Macaroon: ") {
+                if let Ok(metadata_value) = tonic::metadata::AsciiMetadataValue::try_from(macaroon_hex) {
+                    metadata.insert("macaroon", metadata_value);
                 }
             }
-        } else {
-            eprintln!("⚠️  No authentication data received from server!");
         }
         
         match lightning_client.get_info(get_info_request).await {
             Ok(info_response) => {
-                eprintln!("✅ GetInfo successful!");
-                eprintln!("   Node identity: {}", info_response.get_ref().identity_pubkey);
-                eprintln!("   Alias: {}", info_response.get_ref().alias);
+                eprintln!("✅ Connection established! Node: {}", info_response.get_ref().alias);
             }
             Err(e) => {
                 eprintln!("❌ GetInfo failed: {}", e);
-                return Err(format!("GetInfo failed: {}", e).into());
+                return Err(format!("Failed to establish connection: {}", e).into());
             }
         }
         
-        // Now call AddInvoice
-        eprintln!("📤 Sending gRPC request: /lnrpc.Lightning/AddInvoice");
+        eprintln!("📤 Sending AddInvoice request...");
         let mut request = Request::new(invoice);
         
         // Add authentication headers from Act 2 payload
         if let Some(auth_str) = auth_data {
             let metadata = request.metadata_mut();
             
-            // Parse auth_data: "Header1: value1\r\nHeader2: value2"
-            for line in auth_str.split("\r\n") {
-                if let Some((key, value)) = line.split_once(": ") {
-                    // Convert to lowercase ASCII (gRPC metadata keys must be lowercase)
-                    let key_lower = key.to_lowercase();
-                    match (
-                        tonic::metadata::MetadataKey::from_bytes(key_lower.as_bytes()),
-                        tonic::metadata::AsciiMetadataValue::try_from(value)
-                    ) {
-                        (Ok(metadata_key), Ok(metadata_value)) => {
-                            metadata.insert(metadata_key, metadata_value);
-                        }
-                        _ => {}
-                    }
+            // Parse auth_data: Expected format is "Macaroon: <hex_encoded_macaroon>"
+            // Extract just the hex-encoded value (without the "Macaroon: " prefix)
+            if let Some(macaroon_hex) = auth_str.strip_prefix("Macaroon: ") {
+                if let Ok(metadata_value) = tonic::metadata::AsciiMetadataValue::try_from(macaroon_hex) {
+                    metadata.insert("macaroon", metadata_value);
                 }
             }
         }

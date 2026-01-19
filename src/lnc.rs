@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::{protocol::Message, handshake::client::generate_key, http::Request}};
 use futures_util::{StreamExt, SinkExt, FutureExt};
@@ -959,6 +960,7 @@ impl LNCMailbox {
                                     reading: Arc::new(Mutex::new(false)),
                                     read_error: Arc::new(Mutex::new(None)),
                                     writing: Arc::new(Mutex::new(false)),
+                                    http2_ready: Arc::new(Mutex::new(false)),
                                 };
                                 
                                 let connection_arc = Arc::new(Mutex::new(connection));
@@ -1104,6 +1106,7 @@ impl LNCMailbox {
                         reading: Arc::new(Mutex::new(false)),
                         read_error: Arc::new(Mutex::new(None)),
                         writing: Arc::new(Mutex::new(false)),
+                        http2_ready: Arc::new(Mutex::new(false)),
                     };
                     
                     let connection_arc = Arc::new(Mutex::new(connection));
@@ -1174,7 +1177,8 @@ pub struct GoBNConnection {
     recv_buffer: Vec<u8>,  // Buffer for reassembling multi-chunk messages
     // Cache the last Act 1 packet so we can resend it if the server restarts the
     // GoBN connection and sends a new SYN while we're waiting for Act 2.
-    last_act1_msg_json: Option<String>,
+    // MUST be cleared after handshake completes to prevent infinite resending.
+    pub last_act1_msg_json: Option<String>,
     created_at: tokio::time::Instant,
 }
 
@@ -2125,6 +2129,10 @@ impl LNCMailbox {
             self.remote_public = Some(remote_pub);
         }
         
+        // CRITICAL FIX: Clear the Act 1 cache now that handshake is complete
+        // This prevents the client from resending Act 1 every time it receives a ping
+        gobn.last_act1_msg_json = None;
+        
         eprintln!("✅ Noise handshake completed!");
         
         Ok(())
@@ -2156,11 +2164,11 @@ impl LNCMailbox {
     }
     
     fn mailbox_recv_url(&self) -> String {
-        format!("{}/v1/lightning-node-connect/hashmail/receive", self.mailbox_base_url())
+        format!("{}/v1/lightning-node-connect/hashmail/receive?method=POST", self.mailbox_base_url())
     }
     
     fn mailbox_send_url(&self) -> String {
-        format!("{}/v1/lightning-node-connect/hashmail/send", self.mailbox_base_url())
+        format!("{}/v1/lightning-node-connect/hashmail/send?method=POST", self.mailbox_base_url())
     }
 }
 
@@ -2208,9 +2216,52 @@ pub struct MailboxConnection {
     read_error: Arc<Mutex<Option<String>>>,
     // Track if we're currently writing
     writing: Arc<Mutex<bool>>,
+    // Track if HTTP/2 SETTINGS exchange is complete
+    http2_ready: Arc<Mutex<bool>>,
 }
 
 impl MailboxConnection {
+    /// Initialize HTTP/2 by forcing the SETTINGS exchange to complete
+    pub async fn initialize_http2(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        eprintln!("🔄 Initializing HTTP/2 connection...");
+        
+        // Give tonic a moment to send the preface and initial SETTINGS
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        // Trigger a read to receive the server's SETTINGS
+        // This will cause our async read handler to receive and process the server's SETTINGS
+        // and automatically send the SETTINGS ACK
+        let start = std::time::Instant::now();
+        loop {
+            let buf_len = {
+                let buf = self.read_buffer.lock().await;
+                buf.len()
+            };
+            
+            if buf_len > 0 {
+                eprintln!("✅ Received {} bytes from server (HTTP/2 SETTINGS)", buf_len);
+                break;
+            }
+            
+            if start.elapsed() > Duration::from_secs(2) {
+                return Err("Timeout waiting for server SETTINGS".into());
+            }
+            
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        
+        // Give time for SETTINGS ACK to be sent
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        // Mark HTTP/2 as ready
+        let mut ready = self.http2_ready.lock().await;
+        *ready = true;
+        drop(ready);
+        
+        eprintln!("✅ HTTP/2 SETTINGS exchange complete");
+        Ok(())
+    }
+    
     /// Send an encrypted message through the mailbox
     pub async fn send_encrypted(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
         eprintln!("🔒 Encrypting {} bytes for transmission", data.len());
@@ -2317,9 +2368,30 @@ impl tokio::io::AsyncRead for MailboxConnection {
         tokio::spawn(async move {
             let result = async {
                 // Read one GoBN packet (which contains encrypted Noise data)
-                let mut gobn_guard = gobn.lock().await;
-                let noise_encrypted = gobn_guard.read_msg().await?;
-                drop(gobn_guard);
+                // Use a timeout to avoid blocking write operations
+                let noise_encrypted = tokio::time::timeout(
+                    Duration::from_millis(100),
+                    async {
+                        let mut gobn_guard = gobn.lock().await;
+                        let msg = gobn_guard.read_msg().await?;
+                        Ok::<_, Box<dyn Error + Send + Sync>>(msg)
+                    }
+                ).await;
+                
+                let noise_encrypted = match noise_encrypted {
+                    Ok(Ok(msg)) => msg,
+                    Ok(Err(e)) => return Err(e),
+                    Err(_timeout) => {
+                        // Timeout - couldn't get lock or no data available
+                        // This is normal, just wake and retry later
+                        return Ok(());
+                    }
+                };
+                
+                if noise_encrypted.is_empty() {
+                    // No data read, just retry
+                    return Ok(());
+                }
                 
                 eprintln!("📥 Received {} bytes of encrypted Noise data: {:02x?}", noise_encrypted.len(), &noise_encrypted[..noise_encrypted.len().min(20)]);
                 
@@ -2364,6 +2436,10 @@ impl tokio::io::AsyncRead for MailboxConnection {
                             let total_consumed = header_len + body_len;
                             
                             eprintln!("   ✅ Successfully decrypted {} bytes (consumed {} encrypted bytes)", decrypted.len(), total_consumed);
+                            
+                            // Parse incoming HTTP/2 frames for debugging
+                            eprintln!("🔍 Parsing incoming HTTP/2 frames:");
+                            parse_and_log_http2_frames(&decrypted);
                             
                             // Remove consumed bytes from encrypted buffer
                             enc_buf.drain(..total_consumed);
@@ -2437,6 +2513,120 @@ impl tokio::io::AsyncRead for MailboxConnection {
     }
 }
 
+// HTTP/2 frame parser for debugging
+fn parse_and_log_http2_frames(data: &[u8]) {
+    // Check for HTTP/2 connection preface
+    const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    
+    if data.starts_with(HTTP2_PREFACE) {
+        eprintln!("🔍 HTTP/2 Connection Preface detected ({} bytes)", HTTP2_PREFACE.len());
+        if data.len() > HTTP2_PREFACE.len() {
+            eprintln!("🔍 Additional data after preface: {} bytes", data.len() - HTTP2_PREFACE.len());
+            parse_http2_frames_from_offset(data, HTTP2_PREFACE.len());
+        }
+        return;
+    }
+    
+    // Parse HTTP/2 frames
+    parse_http2_frames_from_offset(data, 0);
+}
+
+fn parse_http2_frames_from_offset(data: &[u8], offset: usize) {
+    let mut pos = offset;
+    
+    while pos + 9 <= data.len() {
+        // HTTP/2 frame header: 9 bytes
+        // 3 bytes: length (24-bit)
+        // 1 byte: type
+        // 1 byte: flags
+        // 4 bytes: stream identifier (31-bit)
+        
+        let length = ((data[pos] as usize) << 16) | ((data[pos + 1] as usize) << 8) | (data[pos + 2] as usize);
+        let frame_type = data[pos + 3];
+        let flags = data[pos + 4];
+        let stream_id = u32::from_be_bytes([
+            data[pos + 5] & 0x7F,  // Clear reserved bit
+            data[pos + 6],
+            data[pos + 7],
+            data[pos + 8],
+        ]);
+        
+        let frame_type_name = match frame_type {
+            0x00 => "DATA",
+            0x01 => "HEADERS",
+            0x02 => "PRIORITY",
+            0x03 => "RST_STREAM",
+            0x04 => "SETTINGS",
+            0x05 => "PUSH_PROMISE",
+            0x06 => "PING",
+            0x07 => "GOAWAY",
+            0x08 => "WINDOW_UPDATE",
+            0x09 => "CONTINUATION",
+            _ => "UNKNOWN",
+        };
+        
+        eprintln!("🔍 HTTP/2 Frame: type={} (0x{:02x}), flags=0x{:02x}, stream_id={}, length={}", 
+                  frame_type_name, frame_type, flags, stream_id, length);
+        
+        // For SETTINGS frames, parse the settings
+        if frame_type == 0x04 && pos + 9 + length <= data.len() {
+            parse_settings_frame(&data[pos + 9..pos + 9 + length], flags);
+        }
+        
+        // For HEADERS frames, try to parse headers
+        if frame_type == 0x01 && pos + 9 + length <= data.len() {
+            parse_headers_frame(&data[pos + 9..pos + 9 + length], flags);
+        }
+        
+        pos += 9 + length;
+        
+        if pos >= data.len() {
+            break;
+        }
+    }
+}
+
+fn parse_settings_frame(payload: &[u8], flags: u8) {
+    if flags & 0x01 != 0 {
+        eprintln!("   📋 SETTINGS ACK");
+        return;
+    }
+    
+    let mut pos = 0;
+    while pos + 6 <= payload.len() {
+        let id = u16::from_be_bytes([payload[pos], payload[pos + 1]]);
+        let value = u32::from_be_bytes([
+            payload[pos + 2],
+            payload[pos + 3],
+            payload[pos + 4],
+            payload[pos + 5],
+        ]);
+        
+        let setting_name = match id {
+            0x01 => "HEADER_TABLE_SIZE",
+            0x02 => "ENABLE_PUSH",
+            0x03 => "MAX_CONCURRENT_STREAMS",
+            0x04 => "INITIAL_WINDOW_SIZE",
+            0x05 => "MAX_FRAME_SIZE",
+            0x06 => "MAX_HEADER_LIST_SIZE",
+            _ => "UNKNOWN",
+        };
+        
+        eprintln!("   📋 {}={}", setting_name, value);
+        pos += 6;
+    }
+}
+
+fn parse_headers_frame(payload: &[u8], flags: u8) {
+    eprintln!("   📨 HEADERS frame payload: {} bytes, flags=0x{:02x}", payload.len(), flags);
+    eprintln!("   📨 First 50 bytes: {:02x?}", &payload[..payload.len().min(50)]);
+    
+    // Try to find recognizable patterns
+    if let Ok(s) = std::str::from_utf8(payload) {
+        eprintln!("   📨 As string: {}", s.chars().take(200).collect::<String>());
+    }
+}
+
 // Implement AsyncWrite for MailboxConnection  
 impl tokio::io::AsyncWrite for MailboxConnection {
     fn poll_write(
@@ -2446,7 +2636,56 @@ impl tokio::io::AsyncWrite for MailboxConnection {
     ) -> std::task::Poll<std::io::Result<usize>> {
         let this = self.get_mut();
         
-        // Add to write buffer
+        // Check if HTTP/2 SETTINGS exchange is complete
+        let http2_ready = match this.http2_ready.try_lock() {
+            Ok(guard) => *guard,
+            Err(_) => false,
+        };
+        
+        // Before SETTINGS exchange is complete, send all frames immediately
+        // This ensures proper ordering: Preface, SETTINGS, SETTINGS ACK before any requests
+        if !http2_ready {
+            eprintln!("📝 poll_write: HTTP/2 not ready - sending {} bytes immediately", buf.len());
+            
+            let gobn = Arc::clone(&this.gobn);
+            let mailbox = Arc::clone(&this.mailbox);
+            let data = buf.to_vec();
+            let len = buf.len();
+            let waker = cx.waker().clone();
+            let http2_ready_arc = Arc::clone(&this.http2_ready);
+            
+            // Check if this is SETTINGS ACK to mark HTTP/2 as ready
+            let is_settings_ack = buf.len() == 9 && buf[3] == 0x04 && buf[4] == 0x01;
+            
+            tokio::spawn(async move {
+                let result = async {
+                    let mut mailbox_guard = mailbox.lock().await;
+                    let encrypted = mailbox_guard.encrypt(&data)?;
+                    drop(mailbox_guard);
+                    
+                    let mut gobn_guard = gobn.lock().await;
+                    gobn_guard.write_msg(&encrypted).await?;
+                    gobn_guard.flush().await?;
+                    
+                    if is_settings_ack {
+                        let mut ready = http2_ready_arc.lock().await;
+                        *ready = true;
+                        eprintln!("✅ HTTP/2 SETTINGS exchange complete");
+                    }
+                    
+                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                }.await;
+                
+                if let Err(e) = result {
+                    eprintln!("❌ Error sending frame: {}", e);
+                }
+                waker.wake();
+            });
+            
+            return std::task::Poll::Ready(Ok(len));
+        }
+        
+        // For other frames, buffer normally
         let mut write_buffer = match this.write_buffer.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
@@ -2455,9 +2694,13 @@ impl tokio::io::AsyncWrite for MailboxConnection {
             }
         };
         
-        eprintln!("📝 poll_write: Adding {} bytes to write_buffer (total will be {} bytes)", 
+        eprintln!("📝 poll_write: Buffering {} bytes (total will be {} bytes)", 
                   buf.len(), write_buffer.len() + buf.len());
         write_buffer.extend_from_slice(buf);
+        
+        // Wake immediately to trigger flush
+        cx.waker().wake_by_ref();
+        
         std::task::Poll::Ready(Ok(buf.len()))
     }
     
@@ -2493,11 +2736,12 @@ impl tokio::io::AsyncWrite for MailboxConnection {
             return std::task::Poll::Ready(Ok(()));
         }
         
-        eprintln!("📤 poll_flush: Flushing {} bytes from write_buffer", write_buffer.len());
-        
         let data = write_buffer.clone();
         write_buffer.clear();
         drop(write_buffer);
+        
+        eprintln!("📤 poll_flush: Sending {} bytes", data.len());
+        parse_and_log_http2_frames(&data);
         
         *writing_guard = true;
         drop(writing_guard);
@@ -2508,17 +2752,21 @@ impl tokio::io::AsyncWrite for MailboxConnection {
         let waker = cx.waker().clone();
         
         tokio::spawn(async move {
+            eprintln!("🔄 poll_flush task started");
             let result = async {
+                eprintln!("🔐 Acquiring mailbox lock for encryption...");
                 let mut mailbox_guard = mailbox.lock().await;
+                eprintln!("✅ Mailbox lock acquired, encrypting...");
                 let encrypted = mailbox_guard.encrypt(&data)?;
                 drop(mailbox_guard);
+                eprintln!("✅ Encryption complete, acquiring GoBN lock...");
                 
-                eprintln!("📤 poll_flush task: Sending {} encrypted bytes via GoBN", encrypted.len());
                 let mut gobn_guard = gobn.lock().await;
+                eprintln!("✅ GoBN lock acquired, writing message...");
                 gobn_guard.write_msg(&encrypted).await?;
+                eprintln!("✅ Message written, flushing...");
                 gobn_guard.flush().await?;
-                eprintln!("✅ poll_flush task: Successfully sent and flushed");
-                
+                eprintln!("✅ Flush complete!");
                 Ok::<(), Box<dyn Error + Send + Sync>>(())
             }.await;
             
@@ -2526,16 +2774,12 @@ impl tokio::io::AsyncWrite for MailboxConnection {
             *writing_guard = false;
             drop(writing_guard);
             
-            match result {
-                Ok(_) => {
-                    eprintln!("✅ poll_flush task completed successfully");
-                    waker.wake();
-                },
-                Err(e) => {
-                    eprintln!("❌ Error in poll_flush task: {}", e);
-                    waker.wake();
-                }
+            if let Err(e) = result {
+                eprintln!("❌ Error in poll_flush: {}", e);
+            } else {
+                eprintln!("✅ poll_flush task completed successfully");
             }
+            waker.wake();
         });
         
         std::task::Poll::Pending

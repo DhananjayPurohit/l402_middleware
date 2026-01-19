@@ -77,58 +77,50 @@ services:
       - bitcoind
 
   litd:
-    image: lightninglabs/lightning-terminal:v0.16.0-alpha
+    image: "lightninglabs/lightning-terminal:v0.14.1-alpha-path-prefix"
     container_name: litd
-    user: root
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    expose:
+      - "8080"
+    ports:
+      - "8081:8080"
+    volumes:
+      - "litd-data:/root/.lit"
+      - "lndnode-data:/data/lnd:ro"
+    depends_on:
+      - bitcoind
+      - lndnode
     entrypoint:
       - sh
       - -c
       - |
-        # Wait for LND to be ready
-        echo "Waiting for LND to be ready..."
-        sleep 30
-        while [ ! -f /data/.lnd/tls.cert ]; do
-          echo "Waiting for LND TLS cert..."
-          sleep 5
+        echo "Waiting for LND files in /data/lnd..."
+        while [ ! -f /data/lnd/tls.cert ]; do
+          sleep 2
         done
-        while [ ! -f /data/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
-          echo "Waiting for LND admin macaroon..."
-          sleep 5
+        while [ ! -f /data/lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
+          sleep 2
         done
         echo "LND files found, starting litd..."
-        echo "Starting litd with LND connection to lnd:10009..."
-        exec litd --lnd-mode=remote --network=regtest \
-          --remote.lnd.rpcserver=lnd:10009 \
-          --remote.lnd.macaroonpath=/data/.lnd/data/chain/bitcoin/regtest/admin.macaroon \
-          --remote.lnd.tlscertpath=/data/.lnd/tls.cert \
-          --httpslisten=0.0.0.0:8443 \
-          --uipassword=password123 \
-          --lit-dir=/root/.lit \
-          --autopilot.disable \
-          --remote.lit-debuglevel=trace
-    ports:
-      - "8443:8443"
-    volumes:
-      - lndnode-data:/data/.lnd
-      - litd-data:/root/.lit
-    depends_on:
-      - lndnode
-    restart: unless-stopped
-
-  hashmail:
-    image: lightninglabs/lightning-terminal:v0.16.0-alpha
-    container_name: hashmail
-    entrypoint: ["aperture"]
+        exec litd "$$@"
     command:
-      - --insecure-httplisten=0.0.0.0:443
-      - --uipassword=password123
-    networks:
-      default:
-        aliases:
-          - mailbox.terminal.lightning.today
-    ports:
-      - "8085:443"
-    restart: unless-stopped
+      - "--insecure-httplisten=0.0.0.0:8080"
+      - "--network=regtest"
+      - "--uipassword=password123"
+      - "--lnd-mode=remote"
+      - "--remote.lnd.rpcserver=lnd:10009"
+      - "--remote.lnd.macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon"
+      - "--remote.lnd.tlscertpath=/data/lnd/tls.cert"
+      - "--faraday.connect_bitcoin"
+      - "--faraday.bitcoin.host=bitcoind:18443"
+      - "--faraday.bitcoin.user=user"
+      - "--faraday.bitcoin.password=pass"
+      - "--autopilot.disable"
+      - "--remote.lit-debuglevel=trace"
+
 
   cln:
     image: elementsproject/lightningd:v25.05
