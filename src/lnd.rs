@@ -105,7 +105,12 @@ impl LightningClientTrait for InterceptedLightningClient {
 
 enum LNDConnectionType {
     Traditional(Arc<Mutex<LndClientWrapper>>),
-    LNC(Arc<Mutex<lnc::LNCMailbox>>),
+    LNC {
+        mailbox: Arc<Mutex<lnc::LNCMailbox>>,
+        client: Arc<Mutex<Option<lnrpc::lightning_client::LightningClient<Channel>>>>,
+        pairing_phrase: String,
+        mailbox_server: String,
+    },
 }
 
 pub struct LNDWrapper {
@@ -370,13 +375,18 @@ impl LNDWrapper {
         
         // Use provided mailbox server or default from pairing data
         let mailbox_server = lnd_options.lnc_mailbox_server.clone()
-            .or(Some(pairing_data.mailbox_server.clone()));
+            .unwrap_or_else(|| pairing_data.mailbox_server.clone());
         
         // Create mailbox (don't connect yet - will connect lazily when needed)
-        let mailbox = lnc::LNCMailbox::new(pairing_data, mailbox_server)?;
+        let mailbox = lnc::LNCMailbox::new(pairing_data, Some(mailbox_server.clone()))?;
         
-        // Store the mailbox itself, connection will be established when first used
-        Ok(LNDConnectionType::LNC(Arc::new(Mutex::new(mailbox))))
+        // Store the mailbox and prepare for client reuse
+        Ok(LNDConnectionType::LNC {
+            mailbox: Arc::new(Mutex::new(mailbox)),
+            client: Arc::new(Mutex::new(None)),
+            pairing_phrase: pairing_phrase.to_string(),
+            mailbox_server,
+        })
     }
 }
 
@@ -412,8 +422,14 @@ impl lnclient::LNClient for LNDWrapper {
                         }
                     }
                 }
-                LNDConnectionType::LNC(mailbox) => {
-                    Self::add_invoice_via_lnc(mailbox, invoice).await
+                LNDConnectionType::LNC { mailbox, client, pairing_phrase, mailbox_server } => {
+                    Self::add_invoice_via_lnc_reusable(
+                        &mailbox,
+                        &client,
+                        &pairing_phrase,
+                        &mailbox_server,
+                        invoice,
+                    ).await
                 }
             }
         })
@@ -422,10 +438,73 @@ impl lnclient::LNClient for LNDWrapper {
 
 impl LNDWrapper {
     /// Add invoice through LNC mailbox connection using proper gRPC client
-    async fn add_invoice_via_lnc(
-        mailbox: Arc<Mutex<lnc::LNCMailbox>>,
+    /// Connection-reusable version that keeps the gRPC client alive
+    async fn add_invoice_via_lnc_reusable(
+        mailbox: &Arc<Mutex<lnc::LNCMailbox>>,
+        client_cache: &Arc<Mutex<Option<lnrpc::lightning_client::LightningClient<Channel>>>>,
+        pairing_phrase: &str,
+        mailbox_server: &str,
         invoice: lnrpc::Invoice,
     ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>> {
+        // Try to use cached client first
+        let mut client_guard = client_cache.lock().await;
+        
+        if client_guard.is_none() {
+            eprintln!("🔄 No cached gRPC client, creating new connection...");
+            drop(client_guard); // Release lock while setting up
+            
+            // Setup new connection
+            let new_client = Self::setup_lnc_client(mailbox, pairing_phrase, mailbox_server).await?;
+            
+            // Store the client
+            let mut client_guard = client_cache.lock().await;
+            *client_guard = Some(new_client);
+        } else {
+            eprintln!("✅ Reusing existing gRPC client");
+        }
+        
+        // Get the client (we know it exists now)
+        let mut client_guard = client_cache.lock().await;
+        let lightning_client = client_guard.as_mut().unwrap();
+        
+        // Get auth data for metadata
+        let mailbox_guard = mailbox.lock().await;
+        let auth_data = mailbox_guard.auth_data.clone();
+        drop(mailbox_guard);
+        
+        eprintln!("📤 Sending AddInvoice request...");
+        let mut request = Request::new(invoice);
+        
+        // Add authentication headers
+        if let Some(auth_str) = auth_data {
+            let metadata = request.metadata_mut();
+            if let Some(macaroon_hex) = auth_str.strip_prefix("Macaroon: ") {
+                if let Ok(metadata_value) = tonic::metadata::AsciiMetadataValue::try_from(macaroon_hex) {
+                    metadata.insert("macaroon", metadata_value);
+                }
+            }
+        }
+        
+        match lightning_client.add_invoice(request).await {
+            Ok(response) => {
+                eprintln!("✅ LNC AddInvoice successful");
+                Ok(response.into_inner())
+            }
+            Err(e) => {
+                eprintln!("❌ AddInvoice failed: {}", e);
+                // Clear cached client on error so it's recreated next time
+                *client_guard = None;
+                Err(format!("gRPC call failed: {}", e).into())
+            }
+        }
+    }
+    
+    /// Setup a new LNC client connection (extracted from add_invoice_via_lnc)
+    async fn setup_lnc_client(
+        mailbox: &Arc<Mutex<lnc::LNCMailbox>>,
+        _pairing_phrase: &str,
+        _mailbox_server: &str,
+    ) -> Result<lnrpc::lightning_client::LightningClient<Channel>, Box<dyn Error + Send + Sync>> {
         // Get or create the mailbox connection (lazy connection)
         let mut mailbox_guard = mailbox.lock().await;
         let connection_arc = mailbox_guard.get_connection().await?;
@@ -434,22 +513,18 @@ impl LNDWrapper {
         let auth_data = mailbox_guard.auth_data.clone();
         drop(mailbox_guard);
         
-        // Extract the connection (we need ownership for the connector)
-        // Note: This limits us to one gRPC call at a time, but that's okay for now
-        let connection = {
-            let mut conn_guard = connection_arc.lock().await;
-            // We can't move out of Arc<Mutex>, so we'll keep the Arc and use it in wrapper
-            drop(conn_guard);
-            connection_arc
+        // Extract the connection and get the http2_ready Arc for monitoring
+        let connection = connection_arc.clone();
+        let http2_ready = {
+            let conn_guard = connection_arc.lock().await;
+            Arc::clone(&conn_guard.http2_ready)
         };
         
-        // Create a connector using tower::service_fn (same pattern as SOCKS5 connection)
+        // Create a connector using tower::service_fn
         let connector = tower::service_fn(move |_uri: http::Uri| {
             let conn = Arc::clone(&connection);
             async move {
                 eprintln!("🔌 Using mailbox connection for gRPC transport");
-                // Create a wrapper that implements AsyncRead/AsyncWrite
-                // The wrapper will handle locking internally when needed
                 Ok::<MailboxConnectionWrapper, std::io::Error>(
                     MailboxConnectionWrapper { connection: conn }
                 )
@@ -457,9 +532,6 @@ impl LNDWrapper {
         });
         
         // Create a tonic channel using the mailbox as transport
-        // Use a generic URI - the actual connection goes through our custom connector.
-        // The :authority header will be set to this value.
-        // Use http:// (not https://) since we already have encryption via Noise
         let channel = Endpoint::from_static("http://localhost:10009")
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(10))
@@ -470,12 +542,18 @@ impl LNDWrapper {
         // Create a Lightning gRPC client
         let mut lightning_client = lnrpc::lightning_client::LightningClient::new(channel);
         
-        // Wait longer for HTTP/2 SETTINGS exchange to complete
-        // This ensures server SETTINGS are received and ACKed before we send any requests
+        // Wait for HTTP/2 SETTINGS exchange to complete
         eprintln!("⏳ Waiting for HTTP/2 SETTINGS exchange...");
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        eprintln!("✅ Sleep complete, proceeding with GetInfo");
+        let start = std::time::Instant::now();
+        while !*http2_ready.lock().await {
+            if start.elapsed() > Duration::from_secs(5) {
+                return Err("Timeout waiting for HTTP/2 SETTINGS exchange".into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        eprintln!("✅ HTTP/2 SETTINGS exchange complete, proceeding with GetInfo");
         
+        // Test connection with GetInfo
         eprintln!("📤 Establishing connection with GetInfo...");
         let mut get_info_request = Request::new(lnrpc::GetInfoRequest{});
         
@@ -499,37 +577,9 @@ impl LNDWrapper {
             }
         }
         
-        eprintln!("📤 Sending AddInvoice request...");
-        let mut request = Request::new(invoice);
-        
-        // Add authentication headers from Act 2 payload
-        if let Some(auth_str) = auth_data {
-            let metadata = request.metadata_mut();
-            
-            // Parse auth_data: Expected format is "Macaroon: <hex_encoded_macaroon>"
-            // Extract just the hex-encoded value (without the "Macaroon: " prefix)
-            if let Some(macaroon_hex) = auth_str.strip_prefix("Macaroon: ") {
-                if let Ok(metadata_value) = tonic::metadata::AsciiMetadataValue::try_from(macaroon_hex) {
-                    metadata.insert("macaroon", metadata_value);
-                }
-            }
-        }
-        
-        let response = lightning_client.add_invoice(request)
-            .await
-            .map_err(|e| {
-                eprintln!("❌ gRPC call error details: {:?}", e);
-                eprintln!("💡 Hint: The server closed the connection. This might be because:");
-                eprintln!("   1. The HTTP/2 negotiation failed");
-                eprintln!("   2. The server doesn't recognize the request format");
-                eprintln!("   3. There's a protocol mismatch");
-                format!("gRPC call failed: {}", e)
-            })?;
-        
-        eprintln!("✅ LNC AddInvoice successful");
-        Ok(response.into_inner())
+        Ok(lightning_client)
     }
-    }
+}
     
 /// Wrapper around Arc<Mutex<MailboxConnection>> that implements AsyncRead + AsyncWrite for tonic transport
 struct MailboxConnectionWrapper {
@@ -600,7 +650,14 @@ impl Clone for LNDConnectionType {
     fn clone(&self) -> Self {
         match self {
             LNDConnectionType::Traditional(client) => LNDConnectionType::Traditional(Arc::clone(client)),
-            LNDConnectionType::LNC(mailbox) => LNDConnectionType::LNC(Arc::clone(mailbox)),
+            LNDConnectionType::LNC { mailbox, client, pairing_phrase, mailbox_server } => {
+                LNDConnectionType::LNC {
+                    mailbox: Arc::clone(mailbox),
+                    client: Arc::clone(client),
+                    pairing_phrase: pairing_phrase.clone(),
+                    mailbox_server: mailbox_server.clone(),
+                }
+            }
         }
     }
 }

@@ -2217,7 +2217,7 @@ pub struct MailboxConnection {
     // Track if we're currently writing
     writing: Arc<Mutex<bool>>,
     // Track if HTTP/2 SETTINGS exchange is complete
-    http2_ready: Arc<Mutex<bool>>,
+    pub http2_ready: Arc<Mutex<bool>>,
 }
 
 impl MailboxConnection {
@@ -2636,56 +2636,7 @@ impl tokio::io::AsyncWrite for MailboxConnection {
     ) -> std::task::Poll<std::io::Result<usize>> {
         let this = self.get_mut();
         
-        // Check if HTTP/2 SETTINGS exchange is complete
-        let http2_ready = match this.http2_ready.try_lock() {
-            Ok(guard) => *guard,
-            Err(_) => false,
-        };
-        
-        // Before SETTINGS exchange is complete, send all frames immediately
-        // This ensures proper ordering: Preface, SETTINGS, SETTINGS ACK before any requests
-        if !http2_ready {
-            eprintln!("📝 poll_write: HTTP/2 not ready - sending {} bytes immediately", buf.len());
-            
-            let gobn = Arc::clone(&this.gobn);
-            let mailbox = Arc::clone(&this.mailbox);
-            let data = buf.to_vec();
-            let len = buf.len();
-            let waker = cx.waker().clone();
-            let http2_ready_arc = Arc::clone(&this.http2_ready);
-            
-            // Check if this is SETTINGS ACK to mark HTTP/2 as ready
-            let is_settings_ack = buf.len() == 9 && buf[3] == 0x04 && buf[4] == 0x01;
-            
-            tokio::spawn(async move {
-                let result = async {
-                    let mut mailbox_guard = mailbox.lock().await;
-                    let encrypted = mailbox_guard.encrypt(&data)?;
-                    drop(mailbox_guard);
-                    
-                    let mut gobn_guard = gobn.lock().await;
-                    gobn_guard.write_msg(&encrypted).await?;
-                    gobn_guard.flush().await?;
-                    
-                    if is_settings_ack {
-                        let mut ready = http2_ready_arc.lock().await;
-                        *ready = true;
-                        eprintln!("✅ HTTP/2 SETTINGS exchange complete");
-                    }
-                    
-                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                }.await;
-                
-                if let Err(e) = result {
-                    eprintln!("❌ Error sending frame: {}", e);
-                }
-                waker.wake();
-            });
-            
-            return std::task::Poll::Ready(Ok(len));
-        }
-        
-        // For other frames, buffer normally
+        // Buffer all frames to preserve order
         let mut write_buffer = match this.write_buffer.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
@@ -2746,9 +2697,14 @@ impl tokio::io::AsyncWrite for MailboxConnection {
         *writing_guard = true;
         drop(writing_guard);
         
+        // Check if this contains SETTINGS ACK to mark HTTP/2 as ready
+        let is_settings_ack = data.len() >= 9 && 
+                              data[data.len()-9..].starts_with(&[0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00]);
+        
         let gobn = Arc::clone(&this.gobn);
         let mailbox = Arc::clone(&this.mailbox);
         let writing = Arc::clone(&this.writing);
+        let http2_ready_arc = Arc::clone(&this.http2_ready);
         let waker = cx.waker().clone();
         
         tokio::spawn(async move {
@@ -2767,6 +2723,13 @@ impl tokio::io::AsyncWrite for MailboxConnection {
                 eprintln!("✅ Message written, flushing...");
                 gobn_guard.flush().await?;
                 eprintln!("✅ Flush complete!");
+                
+                if is_settings_ack {
+                    let mut ready = http2_ready_arc.lock().await;
+                    *ready = true;
+                    eprintln!("✅ HTTP/2 SETTINGS exchange complete");
+                }
+                
                 Ok::<(), Box<dyn Error + Send + Sync>>(())
             }.await;
             
