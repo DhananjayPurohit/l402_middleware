@@ -242,3 +242,55 @@ jobs:
         env: 
           LN_CLIENT_TYPE: NWC
           NWC_URI: ${{ env.NWC_URI }}
+
+      - name: Start litd for LNC tests
+        run: |
+          docker-compose -f docker-compose.yml up -d --no-deps litd
+          echo "Waiting for litd to start..."
+          sleep 10
+          docker logs litd
+
+      - name: Generate LNC pairing phrase
+        run: |
+          echo "Generating LNC pairing phrase..."
+          max_attempts=10
+          attempt=0
+          PAIRING_PHRASE=""
+          
+          while [ $attempt -lt $max_attempts ] && [ -z "$PAIRING_PHRASE" ]; do
+            SESSION_OUTPUT=$(docker exec litd litcli --network=regtest sessions add --label="ci_test" --type=admin 2>&1 || true)
+            
+            if echo "$SESSION_OUTPUT" | grep -q "pairing_secret_mnemonic"; then
+              PAIRING_PHRASE=$(echo "$SESSION_OUTPUT" | grep -A 1 "pairing_secret_mnemonic" | tail -n 1 | tr -d '",')
+              if [ -n "$PAIRING_PHRASE" ]; then
+                echo "✓ Generated pairing phrase"
+                echo "LNC_PAIRING_PHRASE=$PAIRING_PHRASE" >> $GITHUB_ENV
+                break
+              fi
+            fi
+            
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: Waiting for litd to be ready..."
+            sleep 3
+          done
+          
+          if [ -z "$PAIRING_PHRASE" ]; then
+            echo "Warning: Could not generate LNC pairing phrase"
+            echo "LNC tests will be skipped"
+          else
+            echo "✓ LNC pairing phrase generated successfully"
+          fi
+
+      - name: Run tests for LND via LNC
+        run: |
+          if [ -n "$LNC_PAIRING_PHRASE" ]; then
+            echo "Running LND tests via LNC (Lightning Node Connect)..."
+            echo "LNC will be used instead of traditional gRPC connection"
+            cargo test --verbose
+          else
+            echo "Skipping LNC tests - pairing phrase not available"
+          fi
+        env:
+          LN_CLIENT_TYPE: LND
+          LNC_PAIRING_PHRASE: ${{ env.LNC_PAIRING_PHRASE }}
+          LNC_MAILBOX_SERVER: mailbox.terminal.lightning.today:443
