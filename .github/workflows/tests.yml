@@ -222,6 +222,7 @@ jobs:
 
           docker logs cln
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
+          echo "BOLT12_LN_OFFER=$(docker exec cln lightning-cli --network=regtest offer any "BOLT12 Test" | jq -r '.bolt12')" >> $GITHUB_ENV
 
           sudo chmod 777 /cln-socket/lightning-rpc
 
@@ -235,6 +236,20 @@ jobs:
         run: cargo test --verbose --features "no-accept-authenticate-required"
         env: 
           LN_CLIENT_TYPE: CLN
+          CLN_LIGHTNING_RPC_FILE_PATH: /cln-socket/lightning-rpc
+
+      - name: Run tests for BOLT12
+        run: cargo test --verbose
+        env: 
+          LN_CLIENT_TYPE: BOLT12
+          BOLT12_LN_OFFER: ${{ env.BOLT12_LN_OFFER }}
+          CLN_LIGHTNING_RPC_FILE_PATH: /cln-socket/lightning-rpc
+
+      - name: Run tests for BOLT12 for no-accept-authenticate-required feature
+        run: cargo test --verbose --features "no-accept-authenticate-required"
+        env: 
+          LN_CLIENT_TYPE: BOLT12
+          BOLT12_LN_OFFER: ${{ env.BOLT12_LN_OFFER }}
           CLN_LIGHTNING_RPC_FILE_PATH: /cln-socket/lightning-rpc
 
       - name: Run tests for NWC
