@@ -446,12 +446,14 @@ impl LNDWrapper {
         mailbox_server: &str,
         invoice: lnrpc::Invoice,
     ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>> {
-        // Try to use cached client first
-        let mut client_guard = client_cache.lock().await;
+        // Check if we need to create a new client
+        let client_exists = {
+            let client_guard = client_cache.lock().await;
+            client_guard.is_some()
+        }; // Lock automatically dropped here
         
-        if client_guard.is_none() {
+        if !client_exists {
             eprintln!("🔄 No cached gRPC client, creating new connection...");
-            drop(client_guard); // Release lock while setting up
             
             // Setup new connection
             let new_client = Self::setup_lnc_client(mailbox, pairing_phrase, mailbox_server).await?;
@@ -463,9 +465,10 @@ impl LNDWrapper {
             eprintln!("✅ Reusing existing gRPC client");
         }
         
-        // Get the client (we know it exists now)
+        // Take the client out of the cache (we'll put it back after the call)
         let mut client_guard = client_cache.lock().await;
-        let lightning_client = client_guard.as_mut().unwrap();
+        let mut lightning_client = client_guard.take().unwrap();
+        drop(client_guard); // CRITICAL: Release lock before making async gRPC call!
         
         // Get auth data for metadata
         let mailbox_guard = mailbox.lock().await;
@@ -488,12 +491,16 @@ impl LNDWrapper {
         match lightning_client.add_invoice(request).await {
             Ok(response) => {
                 eprintln!("✅ LNC AddInvoice successful");
+                // Put the client back in the cache
+                let mut client_guard = client_cache.lock().await;
+                *client_guard = Some(lightning_client);
                 Ok(response.into_inner())
             }
             Err(e) => {
                 eprintln!("❌ AddInvoice failed: {}", e);
-                // Clear cached client on error so it's recreated next time
-                *client_guard = None;
+                // DO NOT cache the client on error - the connection is likely broken.
+                // Forcing a fresh LNC session (new Noise handshake) on the next request.
+                // TODO: Investigate GoBN seq wrap-around causing Noise nonce desync
                 Err(format!("gRPC call failed: {}", e).into())
             }
         }

@@ -1261,9 +1261,9 @@ impl GoBNConnection {
             self.send_seq, msg_data.len(), gbn_packet.len());
         eprintln!("   First 20 bytes of GoBN packet: {:02x?}", &gbn_packet[..gbn_packet.len().min(20)]);
         
-        // Increment sequence number for next packet (wrap around at window size N=20)
+        // Increment sequence number for next packet (wrap around at s=21, where s=n+1 and n=20)
         let current_seq = self.send_seq;
-        self.send_seq = (self.send_seq + 1) % 20;
+        self.send_seq = (self.send_seq + 1) % 21;
         
         let payload_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &gbn_packet);
         let msg = format!(
@@ -1397,7 +1397,7 @@ impl GoBNConnection {
                                             let _ = self.send_write.flush().await;
                                             
                                             if seq == self.recv_seq {
-                                                self.recv_seq = (self.recv_seq + 1) % 20;
+                                                self.recv_seq = (self.recv_seq + 1) % 21; // s = n + 1 (n=20, s=21)
                                                 eprintln!("✅ Ping ACK sent, recvSeq incremented to {}", self.recv_seq);
                                             }
 
@@ -1457,7 +1457,7 @@ impl GoBNConnection {
                                         eprintln!("✅ ACK sent and flushed for seq {}", seq);
                                         
                                         // Increment expected sequence number AFTER successful processing
-                                        self.recv_seq = (self.recv_seq + 1) % 20;
+                                        self.recv_seq = (self.recv_seq + 1) % 21; // s = n + 1 (n=20, s=21)
                                         
                                         // If this is the final chunk, process the complete message
                                         if final_chunk {
@@ -1546,7 +1546,7 @@ impl GoBNConnection {
                                 let _ = self.send_write.flush().await;
                                 
                                 if seq == self.recv_seq {
-                                    self.recv_seq = (self.recv_seq + 1) % 20;
+                                    self.recv_seq = (self.recv_seq + 1) % 21; // s = n + 1 (n=20, s=21)
                                 }
                                 
                                 if let Some(act1_json) = &self.last_act1_msg_json {
@@ -1583,7 +1583,7 @@ impl GoBNConnection {
                                 return Err(format!("Failed to flush ACK: {}", e).into());
                             }
                             
-                            self.recv_seq = (self.recv_seq + 1) % 20;
+                            self.recv_seq = (self.recv_seq + 1) % 21; // s = n + 1 (n=20, s=21)
                             
                             if final_chunk {
                                 let complete_msgdata = std::mem::take(&mut self.recv_buffer);
