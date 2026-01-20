@@ -154,6 +154,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 lnurl_config: None,
                 nwc_config: None,
                 cln_config: None,
+                bolt12_config: None,
                 root_key: env::var("ROOT_KEY")
                     .expect("ROOT_KEY not found in .env")
                     .as_bytes()
