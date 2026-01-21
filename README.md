@@ -27,13 +27,13 @@ The middleware:-
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402_middleware = "1.9.0"
+l402_middleware = "2.0.0"
 ```
 
 By using the no-accept-authenticate-required feature, the check for the Accept-Authenticate header can be bypassed, allowing L402 to be treated as the default authentication option.
 ```toml
 [dependencies]
-l402_middleware = { version = "1.9.0", features = ["no-accept-authenticate-required"] }
+l402_middleware = { version = "2.0.0", features = ["no-accept-authenticate-required"] }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
@@ -55,7 +55,7 @@ use std::env;
 use std::sync::Arc;
 use reqwest::Client;
 
-use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, cln, middleware};
+use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, cln, bolt12, middleware};
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -160,29 +160,35 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             }),
             nwc_config: None,
             cln_config: None,
+            bolt12_config: None,
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
                 .to_vec(),
         },
         "LND" => {
+            // Check if using LNC
             let lnc_pairing_phrase = env::var("LNC_PAIRING_PHRASE").ok();
+            let lnc_mailbox_server = env::var("LNC_MAILBOX_SERVER").ok();
             
+            // Configure based on connection type
             let lnd_options = if lnc_pairing_phrase.is_some() {
-                // LNC mode - remote access via pairing phrase
+                // LNC mode - only pairing phrase needed, no cert/macaroon required
                 lnd::LNDOptions {
                     address: None,
                     macaroon_file: None,
                     cert_file: None,
+                    socks5_proxy: None,
                     lnc_pairing_phrase,
-                    lnc_mailbox_server: env::var("LNC_MAILBOX_SERVER").ok(),
+                    lnc_mailbox_server,
                 }
             } else {
-                // Traditional mode - direct connection with cert and macaroon
+                // Traditional mode - all required
                 lnd::LNDOptions {
                     address: Some(env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env")),
                     macaroon_file: Some(env::var("MACAROON_FILE_PATH").expect("MACAROON_FILE_PATH not found in .env")),
                     cert_file: Some(env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env")),
+                    socks5_proxy: env::var("SOCKS5_PROXY").ok(), // Optional: e.g., "127.0.0.1:9050" for Tor
                     lnc_pairing_phrase: None,
                     lnc_mailbox_server: None,
                 }
@@ -194,6 +200,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 lnurl_config: None,
                 nwc_config: None,
                 cln_config: None,
+                bolt12_config: None,
                 root_key: env::var("ROOT_KEY")
                     .expect("ROOT_KEY not found in .env")
                     .as_bytes()
@@ -205,6 +212,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnd_config: None,
             lnurl_config: None,
             cln_config: None,
+            bolt12_config: None,
             nwc_config: Some(nwc::NWCOptions {
                 uri: env::var("NWC_URI").expect("NWC_URI not found in .env"),
             }),
@@ -218,8 +226,24 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnd_config: None,
             lnurl_config: None,
             nwc_config: None,
+            bolt12_config: None,
             cln_config: Some(cln::CLNOptions {
                 lightning_dir: env::var("CLN_LIGHTNING_RPC_FILE_PATH").expect("CLN_LIGHTNING_RPC_FILE_PATH not found in .env"),
+            }),
+            root_key: env::var("ROOT_KEY")
+                .expect("ROOT_KEY not found in .env")
+                .as_bytes()
+                .to_vec(),
+        },
+        "BOLT12" => lnclient::LNClientConfig {
+            ln_client_type,
+            lnd_config: None,
+            lnurl_config: None,
+            nwc_config: None,
+            cln_config: None,
+            bolt12_config: Some(bolt12::Bolt12Options {
+                lightning_dir: env::var("CLN_LIGHTNING_RPC_FILE_PATH").expect("CLN_LIGHTNING_RPC_FILE_PATH not found in .env"),
+                offer: env::var("BOLT12_LN_OFFER").expect("BOLT12_LN_OFFER not found in .env"),
             }),
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
