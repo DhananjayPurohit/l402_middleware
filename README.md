@@ -38,10 +38,6 @@ l402_middleware = { version = "1.9.0", features = ["no-accept-authenticate-requi
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
 
-## Lightning Node Connect (LNC)
-
-LNC allows connecting to remote LND nodes without managing certificates or opening ports. Generate a pairing phrase on your node and set `LNC_PAIRING_PHRASE` in your `.env` file instead of the traditional `LND_ADDRESS`, `MACAROON_FILE_PATH`, and `CERT_FILE_PATH` variables
-
 ## Example
 ```rust
 #[macro_use] extern crate rocket;
