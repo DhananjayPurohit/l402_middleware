@@ -275,12 +275,25 @@ jobs:
           while [ $attempt -lt $max_attempts ] && [ -z "$PAIRING_PHRASE" ]; do
             SESSION_OUTPUT=$(docker exec litd litcli --network=regtest sessions add --label="ci_test" --type=admin 2>&1 || true)
             
+            echo "Debug: Session output:"
+            echo "$SESSION_OUTPUT"
+            
             if echo "$SESSION_OUTPUT" | grep -q "pairing_secret_mnemonic"; then
-              PAIRING_PHRASE=$(echo "$SESSION_OUTPUT" | grep -A 1 "pairing_secret_mnemonic" | tail -n 1 | tr -d '",')
-              if [ -n "$PAIRING_PHRASE" ]; then
-                echo "✓ Generated pairing phrase"
+              # Extract the full mnemonic - it should be the value of pairing_secret_mnemonic field
+              # The output is JSON-like, so we extract everything between the quotes after pairing_secret_mnemonic
+              PAIRING_PHRASE=$(echo "$SESSION_OUTPUT" | grep "pairing_secret_mnemonic" | sed 's/.*"pairing_secret_mnemonic"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr -d '\n')
+              
+              # Count words to verify we got the full phrase
+              WORD_COUNT=$(echo "$PAIRING_PHRASE" | wc -w)
+              echo "Debug: Extracted phrase with $WORD_COUNT words: $PAIRING_PHRASE"
+              
+              if [ "$WORD_COUNT" -eq 10 ] && [ -n "$PAIRING_PHRASE" ]; then
+                echo "✓ Generated pairing phrase with 10 words"
                 echo "LNC_PAIRING_PHRASE=$PAIRING_PHRASE" >> $GITHUB_ENV
                 break
+              else
+                echo "Warning: Got $WORD_COUNT words instead of 10, retrying..."
+                PAIRING_PHRASE=""
               fi
             fi
             
