@@ -42,37 +42,35 @@ services:
       - sh
       - -c
       - |
-        if [[ ! -f /data/seed.txt ]]; then
-          lndinit gen-seed > /data/seed.txt
+        if [[ ! -f /root/seed.txt ]]; then
+          lndinit gen-seed > /root/seed.txt
         fi
-        if [[ ! -f /data/walletpassword.txt ]]; then
-          lndinit gen-password > /data/walletpassword.txt
+        if [[ ! -f /root/walletpassword.txt ]]; then
+          lndinit gen-password > /root/walletpassword.txt
         fi
         lndinit -v init-wallet \
           --secret-source=file \
-          --file.seed=/data/seed.txt \
-          --file.wallet-password=/data/walletpassword.txt \
-          --init-file.output-wallet-dir=/data/.lnd/data/chain/bitcoin/regtest \
+          --file.seed=/root/seed.txt \
+          --file.wallet-password=/root/walletpassword.txt \
+          --init-file.output-wallet-dir=/root/.lnd/data/chain/bitcoin/regtest \
           --init-file.validate-password
-        mkdir -p /data/.lnd
-        if [ ! -f "/data/.lnd/umbrel-lnd.conf" ]; then
-          touch "/data/.lnd/umbrel-lnd.conf"
+        mkdir -p /root/.lnd
+        if [ ! -f "/root/.lnd/umbrel-lnd.conf" ]; then
+          touch "/root/.lnd/umbrel-lnd.conf"
         fi
         # Remove old TLS cert if it exists to force regeneration with correct hostname
-        if [ -f "/data/.lnd/tls.cert" ]; then
-          rm -f /data/.lnd/tls.cert /data/.lnd/tls.key
+        if [ -f "/root/.lnd/tls.cert" ]; then
+          rm -f /root/.lnd/tls.cert /root/.lnd/tls.key
         fi
         # Start LND with correct lnddir and exec to run in foreground
-        exec lnd --lnddir=/data/.lnd --listen=0.0.0.0:9735 --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create --rpcmiddleware.enable --tlsextradomain=lnd --tlsextraip=127.0.0.1
+        exec lnd --lnddir=/root/.lnd --listen=0.0.0.0:9735 --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/root/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/root/walletpassword.txt --wallet-unlock-allow-create --rpcmiddleware.enable --tlsextradomain=lnd --tlsextraip=127.0.0.1
     ports:
       - "9735:9735"
       - "10009:10009"
       - "8080:8080"
     volumes:
-      - lndnode-data:/data/.lnd
+      - lndnode-data:/root/.lnd
     restart: unless-stopped
-    environment:
-      HOME: /data
     depends_on:
       - bitcoind
 
@@ -89,7 +87,7 @@ services:
       - "8081:8080"
     volumes:
       - "litd-data:/root/.lit"
-      - "lndnode-data:/data/lnd:ro"
+      - "lndnode-data:/root/.lnd:ro"
     depends_on:
       - bitcoind
       - lndnode
@@ -97,11 +95,11 @@ services:
       - sh
       - -c
       - |
-        echo "Waiting for LND files in /data/lnd..."
-        while [ ! -f /data/lnd/tls.cert ]; do
+        echo "Waiting for LND files in /root/.lnd..."
+        while [ ! -f /root/.lnd/tls.cert ]; do
           sleep 2
         done
-        while [ ! -f /data/lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
+        while [ ! -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
           sleep 2
         done
         echo "LND files found, starting litd..."
@@ -112,8 +110,8 @@ services:
       - "--uipassword=password123"
       - "--lnd-mode=remote"
       - "--remote.lnd.rpcserver=lnd:10009"
-      - "--remote.lnd.macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon"
-      - "--remote.lnd.tlscertpath=/data/lnd/tls.cert"
+      - "--remote.lnd.macaroonpath=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
+      - "--remote.lnd.tlscertpath=/root/.lnd/tls.cert"
       - "--faraday.connect_bitcoin"
       - "--faraday.bitcoin.host=bitcoind:18443"
       - "--faraday.bitcoin.user=user"

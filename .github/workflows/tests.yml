@@ -76,8 +76,8 @@ jobs:
           echo "Waiting for LND to initialize..."
           sleep 10
 
-          MACAROON_PATH="/data/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
-          CERT_PATH="/data/.lnd/tls.cert"
+          MACAROON_PATH="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
+          CERT_PATH="/root/.lnd/tls.cert"
           
           # Wait a bit more for LND to fully start
           echo "Checking if LND is ready..."
@@ -98,8 +98,8 @@ jobs:
             echo "✓ Extracted macaroon from $MACAROON_PATH"
           else
             echo "Error: Macaroon not found at $MACAROON_PATH"
-            echo "Debug: Listing /data/.lnd structure:"
-            docker exec ${CONTAINER_NAME} find /data/.lnd -type f 2>/dev/null | head -10 || true
+            echo "Debug: Listing /root/.lnd structure:"
+            docker exec ${CONTAINER_NAME} find /root/.lnd -type f 2>/dev/null | head -10 || true
             exit 1
           fi
           
@@ -109,8 +109,8 @@ jobs:
             echo "✓ Extracted certificate from $CERT_PATH"
           else
             echo "Error: Certificate not found at $CERT_PATH"
-            echo "Debug: Listing /data/.lnd structure:"
-            docker exec ${CONTAINER_NAME} ls -la /data/.lnd/ 2>/dev/null || true
+            echo "Debug: Listing /root/.lnd structure:"
+            docker exec ${CONTAINER_NAME} ls -la /root/.lnd/ 2>/dev/null || true
             exit 1
           fi
           
