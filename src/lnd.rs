@@ -15,6 +15,7 @@ use http::Uri;
 use hex;
 
 use crate::lnclient;
+use crate::lnc;
 
 trait AsyncReadWrite: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite> AsyncReadWrite for T {}
@@ -57,10 +58,21 @@ impl AsyncWrite for TlsStreamWrapper {
 
 #[derive(Debug, Clone)]
 pub struct LNDOptions {
-    pub address: String,
-    pub macaroon_file: String,
-    pub cert_file: String,
-    pub socks5_proxy: Option<String>, // Format: "host:port" (e.g., "127.0.0.1:9050" for Tor)
+    /// LND address (required for traditional, not used for LNC)
+    pub address: Option<String>,
+    /// Macaroon file path (required for traditional, not needed for LNC)
+    pub macaroon_file: Option<String>,
+    /// Cert file path (required for traditional, not needed for LNC)
+    pub cert_file: Option<String>,
+    /// SOCKS5 proxy (optional, for traditional connection only)
+    /// Format: "host:port" (e.g., "127.0.0.1:9050" for Tor)
+    /// REQUIRED for Tor .onion addresses (DNS resolution needs Tor)
+    /// Optional for regular addresses (useful for privacy, bypassing restrictions, or testing)
+    pub socks5_proxy: Option<String>,
+    /// LNC pairing phrase (base64-encoded JSON or mnemonic) - use this for LNC connection
+    pub lnc_pairing_phrase: Option<String>,
+    /// Override default mailbox server (optional, for LNC only)
+    pub lnc_mailbox_server: Option<String>,
 }
 
 enum LndClientWrapper {
@@ -82,7 +94,6 @@ struct InterceptedLightningClient {
     add_invoice_fn: Box<dyn FnMut(lnrpc::Invoice) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<tonic::Response<lnrpc::AddInvoiceResponse>, tonic::Status>> + Send>> + Send + Sync>,
 }
 
-
 impl LightningClientTrait for InterceptedLightningClient {
     fn add_invoice(
         &mut self,
@@ -92,8 +103,18 @@ impl LightningClientTrait for InterceptedLightningClient {
     }
 }
 
+enum LNDConnectionType {
+    Traditional(Arc<Mutex<LndClientWrapper>>),
+    LNC {
+        mailbox: Arc<Mutex<lnc::LNCMailbox>>,
+        client: Arc<Mutex<Option<lnrpc::lightning_client::LightningClient<Channel>>>>,
+        pairing_phrase: String,
+        mailbox_server: String,
+    },
+}
+
 pub struct LNDWrapper {
-    client: Arc<Mutex<LndClientWrapper>>,
+    connection: LNDConnectionType,
 }
 
 impl LNDWrapper {
@@ -101,7 +122,31 @@ impl LNDWrapper {
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
         let lnd_options = ln_client_config.lnd_config.clone().unwrap();
-        let address = lnd_options.address.clone();
+        
+        // Check if LNC pairing phrase is provided
+        let connection = if let Some(pairing_phrase) = &lnd_options.lnc_pairing_phrase {
+            // Use LNC connection
+            Self::connect_lnc(pairing_phrase, &lnd_options).await?
+        } else {
+            // Use traditional connection
+            Self::connect_traditional(&lnd_options).await?
+        };
+
+        Ok(Arc::new(Mutex::new(LNDWrapper { connection })))
+    }
+    
+    async fn connect_traditional(
+        lnd_options: &LNDOptions,
+    ) -> Result<LNDConnectionType, Box<dyn Error + Send + Sync>> {
+        // Validate required fields for traditional connection
+        let address = lnd_options.address.as_ref()
+            .ok_or("LND_ADDRESS is required for traditional connection")?;
+        let cert = lnd_options.cert_file.as_ref()
+            .ok_or("CERT_FILE_PATH is required for traditional connection")?;
+        let macaroon = lnd_options.macaroon_file.as_ref()
+            .ok_or("MACAROON_FILE_PATH is required for traditional connection")?;
+        
+        // Parse the port from the LNDOptions address, assuming the format is "host:port"
         let parts: Vec<&str> = address.split(':').collect();
         if parts.len() != 2 {
             return Err(format!(
@@ -115,24 +160,21 @@ impl LNDWrapper {
             .parse()
             .map_err(|_| "Port is not a valid u32".to_string())?;
 
-        let cert = lnd_options.cert_file;
-        let macaroon = lnd_options.macaroon_file;
-
         let host_clone = host.clone();
-        let client_wrapper = if let Some(proxy_addr) = lnd_options.socks5_proxy {
+        let client_wrapper = if let Some(proxy_addr) = &lnd_options.socks5_proxy {
             println!("Attempting to connect to LND through SOCKS5 proxy: {} -> {}:{}", proxy_addr, host, port);
-            let lightning = Self::connect_with_socks5_proxy(host, port, cert, macaroon, proxy_addr).await?;
+            let lightning = Self::connect_with_socks5_proxy(host, port, cert.clone(), macaroon.clone(), proxy_addr.clone()).await?;
             LndClientWrapper::Custom {
                 lightning,
             }
         } else {
             println!("Connecting to LND directly at {}:{}", host, port);
-            let client = tonic_openssl_lnd::connect(host, port, cert, macaroon).await
+            let client = tonic_openssl_lnd::connect(host, port, cert.clone(), macaroon.clone()).await
                 .map_err(|e| format!("Failed to connect to LND at {}:{}: {}", host_clone, port, e))?;
             LndClientWrapper::Standard(client)
         };
 
-        Ok(Arc::new(Mutex::new(LNDWrapper { client: Arc::new(Mutex::new(client_wrapper)) })))
+        Ok(LNDConnectionType::Traditional(Arc::new(Mutex::new(client_wrapper))))
     }
 
     /// Connect to LND through a SOCKS5 proxy (e.g., Tor)
@@ -305,6 +347,47 @@ impl LNDWrapper {
             add_invoice_fn,
         }) as Box<dyn LightningClientTrait + Send + Sync>)
     }
+    
+    async fn connect_lnc(
+        pairing_phrase: &str,
+        lnd_options: &LNDOptions,
+    ) -> Result<LNDConnectionType, Box<dyn Error + Send + Sync>> {
+        let pairing_phrase = pairing_phrase.trim();
+        
+        // Check if it's a hex string (pairing_secret) or mnemonic phrase
+        // Pairing_secret hex strings are typically 14-32 hex characters (28-64 hex chars)
+        // Mnemonics are 10 words separated by spaces
+        let trimmed = pairing_phrase.trim();
+        let is_hex = trimmed.len() <= 64 
+            && !trimmed.contains(' ')
+            && trimmed.chars().all(|c| c.is_ascii_hexdigit());
+        
+        let pairing_data = if is_hex {
+            eprintln!("Detected entropy hex format, parsing directly...");
+            eprintln!("Entropy hex: {}", trimmed);
+            // It's a hex string - use entropy directly
+            lnc::parse_pairing_phrase_from_entropy(trimmed)?
+        } else {
+            eprintln!("Detected mnemonic phrase format, parsing...");
+            // It's a mnemonic phrase - derive from mnemonic
+            lnc::parse_pairing_phrase(trimmed)?
+        };
+        
+        // Use provided mailbox server or default from pairing data
+        let mailbox_server = lnd_options.lnc_mailbox_server.clone()
+            .unwrap_or_else(|| pairing_data.mailbox_server.clone());
+        
+        // Create mailbox (don't connect yet - will connect lazily when needed)
+        let mailbox = lnc::LNCMailbox::new(pairing_data, Some(mailbox_server.clone()))?;
+        
+        // Store the mailbox and prepare for client reuse
+        Ok(LNDConnectionType::LNC {
+            mailbox: Arc::new(Mutex::new(mailbox)),
+            client: Arc::new(Mutex::new(None)),
+            pairing_phrase: pairing_phrase.to_string(),
+            mailbox_server,
+        })
+    }
 }
 
 impl lnclient::LNClient for LNDWrapper {
@@ -312,29 +395,276 @@ impl lnclient::LNClient for LNDWrapper {
         &self,
         invoice: lnrpc::Invoice,
     ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>> + Send>> {
-        let client = Arc::clone(&self.client);
+        let connection = self.connection.clone();
+        
         Box::pin(async move {
-            let mut client_wrapper = client.lock().await;
-            let response = match &mut *client_wrapper {
-                LndClientWrapper::Standard(client) => {
-                    client.lightning().add_invoice(invoice).await
+            match connection {
+                LNDConnectionType::Traditional(client_wrapper) => {
+                    let mut client_wrapper = client_wrapper.lock().await;
+                    let response = match &mut *client_wrapper {
+                        LndClientWrapper::Standard(client) => {
+                            client.lightning().add_invoice(invoice).await
+                        }
+                        LndClientWrapper::Custom { lightning } => {
+                            lightning.add_invoice(invoice).await
+                        }
+                    };
+                    
+                    match response {
+                        Ok(res) => {
+                            println!("response {:?}", res);
+                            Ok(res.into_inner())
+                        }
+                        Err(e) => {
+                            eprintln!("Error adding invoice: {:?}", e);
+                            let boxed_error: Box<dyn Error + Send + Sync> = Box::new(e);
+                            Err(boxed_error)
+                        }
+                    }
                 }
-                LndClientWrapper::Custom { lightning } => {
-                    lightning.add_invoice(invoice).await
-                }
-            };
-            
-            match response {
-                Ok(res) => {
-                    println!("response {:?}", res);
-                    Ok(res.into_inner())
-                }
-                Err(e) => {
-                    eprintln!("Error adding invoice: {:?}", e);
-                    let boxed_error: Box<dyn Error + Send + Sync> = Box::new(e);
-                    Err(boxed_error)
+                LNDConnectionType::LNC { mailbox, client, pairing_phrase, mailbox_server } => {
+                    Self::add_invoice_via_lnc_reusable(
+                        &mailbox,
+                        &client,
+                        &pairing_phrase,
+                        &mailbox_server,
+                        invoice,
+                    ).await
                 }
             }
         })
+    }
+}
+
+impl LNDWrapper {
+    /// Add invoice through LNC mailbox connection using proper gRPC client
+    /// Connection-reusable version that keeps the gRPC client alive
+    async fn add_invoice_via_lnc_reusable(
+        mailbox: &Arc<Mutex<lnc::LNCMailbox>>,
+        client_cache: &Arc<Mutex<Option<lnrpc::lightning_client::LightningClient<Channel>>>>,
+        pairing_phrase: &str,
+        mailbox_server: &str,
+        invoice: lnrpc::Invoice,
+    ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>> {
+        // Check if we need to create a new client
+        let client_exists = {
+            let client_guard = client_cache.lock().await;
+            client_guard.is_some()
+        }; // Lock automatically dropped here
+        
+        if !client_exists {
+            eprintln!("🔄 No cached gRPC client, creating new connection...");
+            
+            // Setup new connection
+            let new_client = Self::setup_lnc_client(mailbox, pairing_phrase, mailbox_server).await?;
+            
+            // Store the client
+            let mut client_guard = client_cache.lock().await;
+            *client_guard = Some(new_client);
+        } else {
+            eprintln!("✅ Reusing existing gRPC client");
+        }
+        
+        // Take the client out of the cache (we'll put it back after the call)
+        let mut client_guard = client_cache.lock().await;
+        let mut lightning_client = client_guard.take().unwrap();
+        drop(client_guard); // CRITICAL: Release lock before making async gRPC call!
+        
+        // Get auth data for metadata
+        let mailbox_guard = mailbox.lock().await;
+        let auth_data = mailbox_guard.auth_data.clone();
+        drop(mailbox_guard);
+        
+        eprintln!("📤 Sending AddInvoice request...");
+        let mut request = Request::new(invoice);
+        
+        // Add authentication headers
+        if let Some(auth_str) = auth_data {
+            let metadata = request.metadata_mut();
+            if let Some(macaroon_hex) = auth_str.strip_prefix("Macaroon: ") {
+                if let Ok(metadata_value) = tonic::metadata::AsciiMetadataValue::try_from(macaroon_hex) {
+                    metadata.insert("macaroon", metadata_value);
+                }
+            }
+        }
+        
+        match lightning_client.add_invoice(request).await {
+            Ok(response) => {
+                eprintln!("✅ LNC AddInvoice successful");
+                // Put the client back in the cache
+                let mut client_guard = client_cache.lock().await;
+                *client_guard = Some(lightning_client);
+                Ok(response.into_inner())
+            }
+            Err(e) => {
+                eprintln!("❌ AddInvoice failed: {}", e);
+                // DO NOT cache the client on error - the connection is likely broken.
+                // Forcing a fresh LNC session (new Noise handshake) on the next request.
+                // TODO: Investigate GoBN seq wrap-around causing Noise nonce desync
+                Err(format!("gRPC call failed: {}", e).into())
+            }
+        }
+    }
+    
+    /// Setup a new LNC client connection (extracted from add_invoice_via_lnc)
+    async fn setup_lnc_client(
+        mailbox: &Arc<Mutex<lnc::LNCMailbox>>,
+        _pairing_phrase: &str,
+        _mailbox_server: &str,
+    ) -> Result<lnrpc::lightning_client::LightningClient<Channel>, Box<dyn Error + Send + Sync>> {
+        // Get or create the mailbox connection (lazy connection)
+        let mut mailbox_guard = mailbox.lock().await;
+        let connection_arc = mailbox_guard.get_connection().await?;
+        
+        // Extract auth_data for gRPC metadata
+        let auth_data = mailbox_guard.auth_data.clone();
+        drop(mailbox_guard);
+        
+        // Extract the connection and get the http2_ready Arc for monitoring
+        let connection = connection_arc.clone();
+        let http2_ready = {
+            let conn_guard = connection_arc.lock().await;
+            Arc::clone(&conn_guard.http2_ready)
+        };
+        
+        // Create a connector using tower::service_fn
+        let connector = tower::service_fn(move |_uri: http::Uri| {
+            let conn = Arc::clone(&connection);
+            async move {
+                eprintln!("🔌 Using mailbox connection for gRPC transport");
+                Ok::<MailboxConnectionWrapper, std::io::Error>(
+                    MailboxConnectionWrapper { connection: conn }
+                )
+            }
+        });
+        
+        // Create a tonic channel using the mailbox as transport
+        let channel = Endpoint::from_static("http://localhost:10009")
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .connect_with_connector(connector)
+            .await
+            .map_err(|e| format!("Failed to create gRPC channel: {}", e))?;
+        
+        // Create a Lightning gRPC client
+        let mut lightning_client = lnrpc::lightning_client::LightningClient::new(channel);
+        
+        // Wait for HTTP/2 SETTINGS exchange to complete
+        eprintln!("⏳ Waiting for HTTP/2 SETTINGS exchange...");
+        let start = std::time::Instant::now();
+        while !*http2_ready.lock().await {
+            if start.elapsed() > Duration::from_secs(5) {
+                return Err("Timeout waiting for HTTP/2 SETTINGS exchange".into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        eprintln!("✅ HTTP/2 SETTINGS exchange complete, proceeding with GetInfo");
+        
+        // Test connection with GetInfo
+        eprintln!("📤 Establishing connection with GetInfo...");
+        let mut get_info_request = Request::new(lnrpc::GetInfoRequest{});
+        
+        // Add authentication metadata
+        if let Some(ref auth_str) = auth_data {
+            let metadata = get_info_request.metadata_mut();
+            if let Some(macaroon_hex) = auth_str.strip_prefix("Macaroon: ") {
+                if let Ok(metadata_value) = tonic::metadata::AsciiMetadataValue::try_from(macaroon_hex) {
+                    metadata.insert("macaroon", metadata_value);
+                }
+            }
+        }
+        
+        match lightning_client.get_info(get_info_request).await {
+            Ok(info_response) => {
+                eprintln!("✅ Connection established! Node: {}", info_response.get_ref().alias);
+            }
+            Err(e) => {
+                eprintln!("❌ GetInfo failed: {}", e);
+                return Err(format!("Failed to establish connection: {}", e).into());
+            }
+        }
+        
+        Ok(lightning_client)
+    }
+}
+    
+/// Wrapper around Arc<Mutex<MailboxConnection>> that implements AsyncRead + AsyncWrite for tonic transport
+struct MailboxConnectionWrapper {
+    connection: Arc<Mutex<lnc::MailboxConnection>>,
+}
+
+impl AsyncRead for MailboxConnectionWrapper {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        // Try to lock and delegate
+        match self.connection.try_lock() {
+            Ok(mut conn) => Pin::new(&mut *conn).poll_read(cx, buf),
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl AsyncWrite for MailboxConnectionWrapper {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.connection.try_lock() {
+            Ok(mut conn) => Pin::new(&mut *conn).poll_write(cx, buf),
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    }
+    
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.connection.try_lock() {
+            Ok(mut conn) => Pin::new(&mut *conn).poll_flush(cx),
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    }
+    
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.connection.try_lock() {
+            Ok(mut conn) => Pin::new(&mut *conn).poll_shutdown(cx),
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+// Implement Clone for LNDConnectionType
+impl Clone for LNDConnectionType {
+    fn clone(&self) -> Self {
+        match self {
+            LNDConnectionType::Traditional(client) => LNDConnectionType::Traditional(Arc::clone(client)),
+            LNDConnectionType::LNC { mailbox, client, pairing_phrase, mailbox_server } => {
+                LNDConnectionType::LNC {
+                    mailbox: Arc::clone(mailbox),
+                    client: Arc::clone(client),
+                    pairing_phrase: pairing_phrase.clone(),
+                    mailbox_server: mailbox_server.clone(),
+                }
+            }
+        }
     }
 }

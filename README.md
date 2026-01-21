@@ -1,5 +1,5 @@
 # l402_middleware
-A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs. It supports Lightning Network Daemon (LND), Core Lightning (CLN), Lightning URL (LNURL), and Nostr Wallet Connect (NWC) for generating invoices.
+A middleware library for rust that uses [L402, formerly known as LSAT](https://github.com/lightninglabs/L402/blob/master/protocol-specification.md) (a protocol standard for authentication and paid APIs) and provides handler functions to accept microtransactions before serving ad-free content or any paid APIs. It supports Lightning Network Daemon (LND), Lightning Node Connect (LNC), Core Lightning (CLN), Lightning URL (LNURL), and Nostr Wallet Connect (NWC) for generating invoices.
 
 Check out the Go version here:
 https://github.com/getAlby/lsat-middleware
@@ -37,6 +37,10 @@ l402_middleware = { version = "1.9.0", features = ["no-accept-authenticate-requi
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
+
+## Lightning Node Connect (LNC)
+
+LNC allows connecting to remote LND nodes without managing certificates or opening ports. Generate a pairing phrase on your node and set `LNC_PAIRING_PHRASE` in your `.env` file instead of the traditional `LND_ADDRESS`, `MACAROON_FILE_PATH`, and `CERT_FILE_PATH` variables
 
 ## Example
 ```rust
@@ -161,21 +165,40 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 .as_bytes()
                 .to_vec(),
         },
-        "LND" => lnclient::LNClientConfig {
-            ln_client_type,
-            lnd_config: Some(lnd::LNDOptions {
-                address: env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env"),
-                macaroon_file: env::var("MACAROON_FILE_PATH").expect("MACAROON_FILE_PATH not found in .env"),
-                cert_file: env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env"),
-                socks5_proxy: env::var("SOCKS5_PROXY").ok(), // Optional: e.g., "127.0.0.1:9050" for Tor
-            }),
-            lnurl_config: None,
-            nwc_config: None,
-            cln_config: None,
-            root_key: env::var("ROOT_KEY")
-                .expect("ROOT_KEY not found in .env")
-                .as_bytes()
-                .to_vec(),
+        "LND" => {
+            let lnc_pairing_phrase = env::var("LNC_PAIRING_PHRASE").ok();
+            
+            let lnd_options = if lnc_pairing_phrase.is_some() {
+                // LNC mode - remote access via pairing phrase
+                lnd::LNDOptions {
+                    address: None,
+                    macaroon_file: None,
+                    cert_file: None,
+                    lnc_pairing_phrase,
+                    lnc_mailbox_server: env::var("LNC_MAILBOX_SERVER").ok(),
+                }
+            } else {
+                // Traditional mode - direct connection with cert and macaroon
+                lnd::LNDOptions {
+                    address: Some(env::var("LND_ADDRESS").expect("LND_ADDRESS not found in .env")),
+                    macaroon_file: Some(env::var("MACAROON_FILE_PATH").expect("MACAROON_FILE_PATH not found in .env")),
+                    cert_file: Some(env::var("CERT_FILE_PATH").expect("CERT_FILE_PATH not found in .env")),
+                    lnc_pairing_phrase: None,
+                    lnc_mailbox_server: None,
+                }
+            };
+            
+            lnclient::LNClientConfig {
+                ln_client_type,
+                lnd_config: Some(lnd_options),
+                lnurl_config: None,
+                nwc_config: None,
+                cln_config: None,
+                root_key: env::var("ROOT_KEY")
+                    .expect("ROOT_KEY not found in .env")
+                    .as_bytes()
+                    .to_vec(),
+            }
         },
         "NWC" => lnclient::LNClientConfig {
             ln_client_type,
