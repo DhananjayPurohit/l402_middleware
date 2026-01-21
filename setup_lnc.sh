@@ -26,8 +26,24 @@ ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass
 docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$ADDR" > /dev/null
 
 echo ""
-echo "Waiting for lndnode to auto-create wallet and litd to connect..."
-sleep 15
+echo "Waiting for lndnode to auto-create wallet..."
+# Wait for LND to be fully ready - check for both wallet creation and RPC availability
+for i in {1..60}; do
+  if docker exec lndnode lncli -n regtest getinfo > /dev/null 2>&1; then
+    echo "✓ LND is ready and wallet is unlocked!"
+    break
+  fi
+  if [ $i -eq 60 ]; then
+    echo "Error: LND did not become ready in time"
+    echo "Checking LND logs:"
+    docker logs lndnode --tail 20
+    exit 1
+  fi
+  sleep 2
+done
+
+echo "Waiting for litd to connect..."
+sleep 5
 
 echo ""
 echo "=========================================="
