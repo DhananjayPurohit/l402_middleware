@@ -28,7 +28,7 @@ pub struct LnAddressUrlResJson {
 
     metadata: String,
 
-    #[serde(rename = "commentAllowed")]
+    #[serde(rename = "commentAllowed", default)]
     comment_allowed: u32,
     tag: String,
 }
