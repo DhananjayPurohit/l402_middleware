@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   bitcoind:
     image: lncm/bitcoind:v22.0@sha256:37a1adb29b3abc9f972f0d981f45e41e5fca2e22816a023faa9fdc0084aa4507
@@ -156,10 +154,42 @@ services:
     depends_on:
       - bitcoind
 
+  eclair:
+    image: acinq/eclair:release-0.8.0
+    container_name: eclair
+    user: root
+    environment:
+      - JAVA_OPTS=-Xmx512m
+    command:
+      - -Declair.chain=regtest
+      - -Declair.server.public-ips.0=eclair
+      - -Declair.server.port=9945
+      - -Declair.api.enabled=true
+      - -Declair.api.binding-ip=0.0.0.0
+      - -Declair.api.port=8282
+      - -Declair.api.password=eclairpass
+      - -Declair.bitcoind.host=bitcoind
+      - -Declair.bitcoind.rpcport=18443
+      - -Declair.bitcoind.rpcuser=user
+      - -Declair.bitcoind.rpcpassword=pass
+      - -Declair.bitcoind.zmqblock=tcp://bitcoind:28332
+      - -Declair.bitcoind.zmqtx=tcp://bitcoind:28333
+      - -Declair.node-alias=eclair-node
+      - -Declair.trampoline-payments-enable=true
+    ports:
+      - "9945:9945"  # P2P port
+      - "8282:8282"  # API port
+    volumes:
+      - eclair-data:/data
+    restart: unless-stopped
+    depends_on:
+      - bitcoind
+
 volumes:
   bitcoin_data:
   lndnode-data:
   litd-data:
   cln-data:
+  eclair-data:
   tor-data:
 

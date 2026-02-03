@@ -11,12 +11,14 @@ use crate::lnd;
 use crate::nwc;
 use crate::cln;
 use crate::bolt12;
+use crate::eclair;
 
 const LND_CLIENT_TYPE: &str = "LND";
 const LNURL_CLIENT_TYPE: &str = "LNURL";
 const NWC_CLIENT_TYPE: &str = "NWC";
 const CLN_CLIENT_TYPE: &str = "CLN";
 const BOLT12_CLIENT_TYPE: &str = "BOLT12";
+const ECLAIR_CLIENT_TYPE: &str = "ECLAIR";
 
 #[derive(Debug, Clone)]
 pub struct LNClientConfig {
@@ -26,6 +28,7 @@ pub struct LNClientConfig {
     pub nwc_config: Option<nwc::NWCOptions>,
     pub cln_config: Option<cln::CLNOptions>,
     pub bolt12_config: Option<bolt12::Bolt12Options>,
+    pub eclair_config: Option<eclair::EclairOptions>,
     pub root_key: Vec<u8>,
 }
 
@@ -48,6 +51,7 @@ impl LNClientConn {
             NWC_CLIENT_TYPE => nwc::NWCWrapper::new_client(ln_client_config).await?,
             CLN_CLIENT_TYPE => cln::CLNWrapper::new_client(ln_client_config).await?,
             BOLT12_CLIENT_TYPE => bolt12::Bolt12Wrapper::new_client(ln_client_config).await?,
+            ECLAIR_CLIENT_TYPE => eclair::EclairWrapper::new_client(ln_client_config).await?,
             _ => {
                 return Err(format!(
                     "LN Client type not recognized: {}",
