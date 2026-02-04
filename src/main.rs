@@ -9,7 +9,7 @@ use std::env;
 use std::sync::Arc;
 use reqwest::Client;
 
-use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, cln, bolt12, middleware};
+use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, cln, bolt12, eclair, middleware};
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -115,6 +115,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             nwc_config: None,
             cln_config: None,
             bolt12_config: None,
+            eclair_config: None,
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
@@ -155,6 +156,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 nwc_config: None,
                 cln_config: None,
                 bolt12_config: None,
+                eclair_config: None,
                 root_key: env::var("ROOT_KEY")
                     .expect("ROOT_KEY not found in .env")
                     .as_bytes()
@@ -167,6 +169,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnurl_config: None,
             cln_config: None,
             bolt12_config: None,
+            eclair_config: None,
             nwc_config: Some(nwc::NWCOptions {
                 uri: env::var("NWC_URI").expect("NWC_URI not found in .env"),
             }),
@@ -181,6 +184,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnurl_config: None,
             nwc_config: None,
             bolt12_config: None,
+            eclair_config: None,
             cln_config: Some(cln::CLNOptions {
                 lightning_dir: env::var("CLN_LIGHTNING_RPC_FILE_PATH").expect("CLN_LIGHTNING_RPC_FILE_PATH not found in .env"),
             }),
@@ -195,6 +199,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             lnurl_config: None,
             nwc_config: None,
             cln_config: None,
+            eclair_config: None,
             bolt12_config: Some(bolt12::Bolt12Options {
                 lightning_dir: env::var("CLN_LIGHTNING_RPC_FILE_PATH").expect("CLN_LIGHTNING_RPC_FILE_PATH not found in .env"),
                 offer: env::var("BOLT12_LN_OFFER").expect("BOLT12_LN_OFFER not found in .env"),
@@ -204,7 +209,23 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
                 .as_bytes()
                 .to_vec(),
         },
-        _ => panic!("Invalid LN_CLIENT_TYPE. Expected 'LNURL' or 'LND'."),
+        "ECLAIR" => lnclient::LNClientConfig {
+            ln_client_type,
+            lnd_config: None,
+            lnurl_config: None,
+            nwc_config: None,
+            cln_config: None,
+            bolt12_config: None,
+            eclair_config: Some(eclair::EclairOptions {
+                api_url: env::var("ECLAIR_API_URL").expect("ECLAIR_API_URL not found in .env"),
+                password: env::var("ECLAIR_PASSWORD").expect("ECLAIR_PASSWORD not found in .env"),
+            }),
+            root_key: env::var("ROOT_KEY")
+                .expect("ROOT_KEY not found in .env")
+                .as_bytes()
+                .to_vec(),
+        },
+        _ => panic!("Invalid LN_CLIENT_TYPE. Expected 'LNURL', 'LND', 'NWC', 'CLN', 'BOLT12', or 'ECLAIR'."),
     };
 
     // Initialize Fiat Rate Config

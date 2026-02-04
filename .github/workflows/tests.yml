@@ -258,6 +258,51 @@ jobs:
           LN_CLIENT_TYPE: NWC
           NWC_URI: ${{ env.NWC_URI }}
 
+      - name: Start Eclair
+        run: |
+          docker-compose -f docker-compose.yml up -d --no-deps eclair
+          echo "Waiting for Eclair to start..."
+          sleep 15
+          docker logs eclair
+
+      - name: Verify Eclair node
+        run: |
+          echo "Checking Eclair API connectivity..."
+          max_attempts=30
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -s --user :eclairpass http://localhost:8282/getinfo > /dev/null 2>&1; then
+              echo "✓ Eclair API is accessible"
+              ECLAIR_INFO=$(curl -s --user :eclairpass -X POST http://localhost:8282/getinfo)
+              echo "Eclair node info: $ECLAIR_INFO"
+              break
+            fi
+            
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: Waiting for Eclair API..."
+            sleep 2
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "Warning: Eclair API may not be fully ready"
+            docker logs eclair
+          fi
+
+      - name: Run tests for ECLAIR
+        run: cargo test --verbose
+        env: 
+          LN_CLIENT_TYPE: ECLAIR
+          ECLAIR_API_URL: 0.0.0.0:8282
+          ECLAIR_PASSWORD: eclairpass
+
+      - name: Run tests for ECLAIR for no-accept-authenticate-required feature
+        run: cargo test --verbose --features "no-accept-authenticate-required"
+        env: 
+          LN_CLIENT_TYPE: ECLAIR
+          ECLAIR_API_URL: 0.0.0.0:8282
+          ECLAIR_PASSWORD: eclairpass
+
       - name: Start litd for LNC tests
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps litd
