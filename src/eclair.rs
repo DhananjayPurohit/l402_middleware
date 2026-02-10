@@ -44,7 +44,12 @@ impl EclairWrapper {
     pub async fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
-        let eclair_options = ln_client_config.eclair_config.clone().unwrap();
+        let mut eclair_options = ln_client_config.eclair_config.clone().unwrap();
+
+        // Ensure API URL has a scheme
+        if !eclair_options.api_url.starts_with("http://") && !eclair_options.api_url.starts_with("https://") {
+            eclair_options.api_url = format!("http://{}", eclair_options.api_url);
+        }
 
         println!("Eclair client connecting to {}", eclair_options.api_url);
 

@@ -293,14 +293,14 @@ jobs:
         run: cargo test --verbose
         env: 
           LN_CLIENT_TYPE: ECLAIR
-          ECLAIR_API_URL: 0.0.0.0:8282
+          ECLAIR_API_URL: http://0.0.0.0:8282
           ECLAIR_PASSWORD: eclairpass
 
       - name: Run tests for ECLAIR for no-accept-authenticate-required feature
         run: cargo test --verbose --features "no-accept-authenticate-required"
         env: 
           LN_CLIENT_TYPE: ECLAIR
-          ECLAIR_API_URL: 0.0.0.0:8282
+          ECLAIR_API_URL: http://0.0.0.0:8282
           ECLAIR_PASSWORD: eclairpass
 
       - name: Start litd for LNC tests
