@@ -355,7 +355,7 @@ mod tests {
 
         let mac = utils::get_macaroon_from_string(TEST_MACAROON_VALID.to_string()).unwrap();
         let macaroon_id = mac.identifier().clone();
-        let macaroon_id_hex = hex::encode(macaroon_id.0).replace("ff", "");
+        let macaroon_id_hex = hex::encode(macaroon_id.0);
         let preimage = utils::get_preimage_from_string(TEST_PREIMAGE_INVALID.to_string()).unwrap();
         let payment_hash: PaymentHash = PaymentHash::from(preimage);
         let payment_hash_hex = hex::encode(payment_hash.0);

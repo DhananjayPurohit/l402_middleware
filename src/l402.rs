@@ -85,8 +85,8 @@ pub fn verify_l402(
                 Ok(())
             } else {
                 Err(format!(
-                    "Invalid PaymentHash {} for macaroon {:?}",
-                    payment_hash_hex, macaroon_id.0
+                    "Invalid PaymentHash {} for macaroon {}",
+                    payment_hash_hex, hex::encode(id_bytes)
                 ).into())
             }
         },
@@ -128,8 +128,8 @@ pub fn verify_l402_with_verifier(
                 Ok(())
             } else {
                 Err(format!(
-                    "Invalid PaymentHash {} for macaroon {:?}",
-                    payment_hash_hex, macaroon_id.0
+                    "Invalid PaymentHash {} for macaroon {}",
+                    payment_hash_hex, hex::encode(id_bytes)
                 ).into())
             }
         },
