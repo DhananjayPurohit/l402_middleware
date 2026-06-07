@@ -258,7 +258,7 @@ mod tests {
     use rocket::local::asynchronous::Client;
     use rocket::serde::json::Value;
     use super::rocket;
-    use lightning::ln::PaymentHash;
+    use lightning::types::payment::PaymentHash;
 
     use l402_middleware::{l402, utils};
 
