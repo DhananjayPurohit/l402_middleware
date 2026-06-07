@@ -4,7 +4,7 @@ use rocket::serde::json::Json;
 use rocket::serde::Serialize;
 use rocket::http::Status;
 use rocket::Request;
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use std::env;
 use std::sync::Arc;
 use reqwest::Client;

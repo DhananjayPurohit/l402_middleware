@@ -14,10 +14,10 @@ edition = "2021"
 [dependencies]
 base64 = "0.21.5"
 bitcoin = "0.32.3"
-bytes = "1.5"
+bytes = "1.11.1"
 chacha20poly1305 = "0.10"
 cln-rpc = "0.4.0"
-dotenv = "0.15.0"
+dotenvy = "0.15"
 futures-util = "0.3"
 hex = "0.4.3"
 lightning = "0.2.2"
@@ -30,7 +30,7 @@ rocket = { version = "0.5.0-rc.3", features = ["json"] }
 serde = "1.0.210"
 serde_json = "1.0"
 sha2 = "0.10"
-tokio = { version = "1.40.0", features = ["net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 # rustls, webpki-roots removed as we are reverting to insecure for debugging
 # rustls = "0.22"
@@ -38,7 +38,7 @@ tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 tonic = "0.14"
 tokio-socks = "0.5.0"
 tokio-openssl = "0.6.0"
-openssl = "0.10"
+openssl = "0.10.72"
 tower = "0.5"
 hyper-util = { version = "0.1", features = ["tokio"] }
 http = "1.0"
