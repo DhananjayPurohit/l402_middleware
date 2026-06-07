@@ -6,7 +6,7 @@ use cln_rpc::ClnRpc;
 use cln_rpc::model::requests::InvoiceRequest;
 use cln_rpc::model::responses::InvoiceResponse;
 use cln_rpc::primitives::{Amount, AmountOrAny, Sha256};
-use tonic_openssl_lnd::lnrpc;
+use crate::lndrpc::lnrpc;
 use uuid::Uuid;
 
 use crate::lnclient;

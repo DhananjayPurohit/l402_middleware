@@ -20,11 +20,11 @@ cln-rpc = "0.4.0"
 dotenv = "0.15.0"
 futures-util = "0.3"
 hex = "0.4.3"
-lightning = "0.0.125"
-lightning-invoice = "0.32.0"
+lightning = "0.2.2"
+lightning-invoice = "0.34.0"
 macaroon = "0.3.0"
 nwc = "0.41.0"
-prost = "0.10"
+prost = "0.14"
 reqwest = { version = "0.12.7", features = ["json"] }
 rocket = { version = "0.5.0-rc.3", features = ["json"] }
 serde = "1.0.210"
@@ -35,14 +35,13 @@ tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 # rustls, webpki-roots removed as we are reverting to insecure for debugging
 # rustls = "0.22"
 # webpki-roots = "0.26"
-tonic = "0.7"
-tonic-openssl = "0.2"
-tonic_openssl_lnd = "0.2.0"
+tonic = "0.14"
 tokio-socks = "0.5.0"
 tokio-openssl = "0.6.0"
 openssl = "0.10"
-tower = "0.4"
-http = "0.2"
+tower = "0.5"
+hyper-util = { version = "0.1", features = ["tokio"] }
+http = "1.0"
 uuid = { version = "1.12.1", features = ["v4"] }
 x25519-dalek = "2.0"
 secp256k1 = "0.28"
@@ -53,6 +52,7 @@ rand = "0.8"
 hkdf = "0.12"
 scrypt = "0.11"
 k256 = "0.13"
+tonic-prost = "0.14"
 
 [features]
 no-accept-authenticate-required = []

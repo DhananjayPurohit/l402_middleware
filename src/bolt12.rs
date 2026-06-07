@@ -6,7 +6,7 @@ use cln_rpc::ClnRpc;
 use cln_rpc::model::requests::FetchinvoiceRequest;
 use cln_rpc::model::responses::FetchinvoiceResponse;
 use cln_rpc::primitives::Amount;
-use tonic_openssl_lnd::lnrpc;
+use crate::lndrpc::lnrpc;
 
 use crate::lnclient;
 

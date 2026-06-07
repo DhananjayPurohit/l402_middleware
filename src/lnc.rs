@@ -1,8 +1,8 @@
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
-use tokio_tungstenite::{connect_async, tungstenite::{protocol::Message, handshake::client::generate_key, http::Request}};
+use tokio::sync::{Mutex};
+use tokio_tungstenite::{connect_async, tungstenite::{protocol::Message}};
 use futures_util::{StreamExt, SinkExt, FutureExt};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},

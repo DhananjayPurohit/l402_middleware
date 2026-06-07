@@ -1,5 +1,5 @@
-use tonic_openssl_lnd::lnrpc;
-use lightning::ln::{PaymentHash};
+use crate::lndrpc::lnrpc;
+use lightning::types::payment::{PaymentHash};
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
