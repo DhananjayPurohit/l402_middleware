@@ -1,6 +1,6 @@
 use nwc::prelude::*;
 use std::sync::Arc;
-use tonic_openssl_lnd::lnrpc;
+use crate::lndrpc::lnrpc;
 use tokio::sync::Mutex;
 use std::future::Future;
 use std::pin::Pin;

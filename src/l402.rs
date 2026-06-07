@@ -1,4 +1,4 @@
-use lightning::ln::{PaymentHash, PaymentPreimage};
+use lightning::types::payment::{PaymentHash, PaymentPreimage};
 use macaroon::{Macaroon, Verifier, MacaroonKey};
 use rocket::{request, Request};
 use hex;

@@ -1,6 +1,6 @@
 use reqwest::{Client, Error};
 use rocket::serde::json::serde_json;
-use tonic_openssl_lnd::lnrpc;
+use crate::lndrpc::lnrpc;
 use lightning_invoice::{Bolt11Invoice, SignedRawBolt11Invoice};
 use std::sync::Arc;
 use bitcoin::hashes::Hash;

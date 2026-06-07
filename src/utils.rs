@@ -1,4 +1,4 @@
-use lightning::ln::{PaymentPreimage};
+use lightning::types::payment::{PaymentPreimage};
 use macaroon::Macaroon;
 use hex;
 

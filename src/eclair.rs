@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tonic_openssl_lnd::lnrpc;
+use crate::lndrpc::lnrpc;
 use base64::{Engine as _, engine::general_purpose};
 
 use crate::lnclient;

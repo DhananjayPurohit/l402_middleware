@@ -1,5 +1,5 @@
 use macaroon::{Macaroon, MacaroonKey, ByteString, Format};
-use lightning::ln::{PaymentHash};
+use lightning::types::payment::{PaymentHash};
 use crate::l402;
 
 pub fn get_macaroon_as_string(

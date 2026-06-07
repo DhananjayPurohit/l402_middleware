@@ -4,7 +4,7 @@ use rocket::serde::json::Json;
 use rocket::serde::Serialize;
 use rocket::http::Status;
 use rocket::Request;
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use std::env;
 use std::sync::Arc;
 use reqwest::Client;
@@ -258,7 +258,7 @@ mod tests {
     use rocket::local::asynchronous::Client;
     use rocket::serde::json::Value;
     use super::rocket;
-    use lightning::ln::PaymentHash;
+    use lightning::types::payment::PaymentHash;
 
     use l402_middleware::{l402, utils};
 

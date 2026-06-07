@@ -1,3 +1,4 @@
+pub mod lndrpc;
 pub mod l402;
 pub mod lnc;
 pub mod lnclient;
