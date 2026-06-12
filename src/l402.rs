@@ -43,6 +43,18 @@ impl<'r> request::FromRequest<'r> for L402Info {
     }
 }
 
+fn macaroon_id_matches_payment_hash(id_bytes: &[u8], payment_hash: &PaymentHash) -> bool {
+    let expected = &payment_hash.0;
+    if id_bytes.len() == 33 && id_bytes[0] == 0xff {
+        &id_bytes[1..] == expected
+    } else if id_bytes.len() == 32 {
+        id_bytes == expected
+    } else {
+        // Fallback for unexpected identifier lengths: hex substring match.
+        hex::encode(id_bytes).contains(&hex::encode(expected))
+    }
+}
+
 pub fn verify_l402(
     mac: &Macaroon,
     caveats: Vec<String>,
@@ -65,28 +77,13 @@ pub fn verify_l402(
     match verifier.verify(&mac, &mac_key, Default::default()) {
         Ok(_) => {
             let payment_hash: PaymentHash = PaymentHash::from(preimage);
-            let payment_hash_hex = hex::encode(payment_hash.0);
-            
-            let macaroon_id = mac.identifier().clone();
-            let id_bytes = &macaroon_id.0;
-            let expected_bytes = &payment_hash.0;
-            
-            let id_matches = if id_bytes.len() == 33 && id_bytes[0] == 0xff {
-                &id_bytes[1..] == expected_bytes
-            } else if id_bytes.len() == 32 {
-                id_bytes == expected_bytes
-            } else {
-                // Fallback for unexpected lengths
-                let macaroon_id_hex = hex::encode(id_bytes);
-                macaroon_id_hex.contains(&payment_hash_hex)
-            };
-
-            if id_matches {
+            let id_bytes = &mac.identifier().clone().0;
+            if macaroon_id_matches_payment_hash(id_bytes, &payment_hash) {
                 Ok(())
             } else {
                 Err(format!(
                     "Invalid PaymentHash {} for macaroon {}",
-                    payment_hash_hex, hex::encode(id_bytes)
+                    hex::encode(payment_hash.0), hex::encode(id_bytes)
                 ).into())
             }
         },
@@ -108,28 +105,13 @@ pub fn verify_l402_with_verifier(
     match verifier.verify(&mac, &mac_key, Default::default()) {
         Ok(_) => {
             let payment_hash: PaymentHash = PaymentHash::from(preimage);
-            let payment_hash_hex = hex::encode(payment_hash.0);
-            
-            let macaroon_id = mac.identifier().clone();
-            let id_bytes = &macaroon_id.0;
-            let expected_bytes = &payment_hash.0;
-            
-            let id_matches = if id_bytes.len() == 33 && id_bytes[0] == 0xff {
-                &id_bytes[1..] == expected_bytes
-            } else if id_bytes.len() == 32 {
-                id_bytes == expected_bytes
-            } else {
-                // Fallback for unexpected lengths
-                let macaroon_id_hex = hex::encode(id_bytes);
-                macaroon_id_hex.contains(&payment_hash_hex)
-            };
-            
-            if id_matches {
+            let id_bytes = &mac.identifier().clone().0;
+            if macaroon_id_matches_payment_hash(id_bytes, &payment_hash) {
                 Ok(())
             } else {
                 Err(format!(
                     "Invalid PaymentHash {} for macaroon {}",
-                    payment_hash_hex, hex::encode(id_bytes)
+                    hex::encode(payment_hash.0), hex::encode(id_bytes)
                 ).into())
             }
         },
