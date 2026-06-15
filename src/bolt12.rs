@@ -152,9 +152,11 @@ impl lnclient::LNClient for Bolt12Wrapper {
         Box::pin(async move {
             let memo = if invoice.memo.is_empty() { None } else { Some(invoice.memo.clone()) };
             
+            let amount_msat = u64::try_from(invoice.value_msat)
+                .map_err(|_| format!("invalid value_msat: {}", invoice.value_msat))?;
             let (payment_request, r_hash, payment_secret) = backend.fetch_invoice(
-                &offer, 
-                invoice.value_msat as u64, 
+                &offer,
+                amount_msat,
                 memo
             ).await?;
             

@@ -368,58 +368,31 @@ impl LNDWrapper {
     async fn add_invoice_via_lnc(
         mailbox: &Arc<Mutex<lnc::LNCMailbox>>,
         client_cache: &Arc<Mutex<Option<LndLightningClient>>>,
-        _pairing_phrase: &str,
-        _mailbox_server: &str,
         invoice: lnrpc::Invoice,
     ) -> Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>> {
-        // Check if we need to create a new client
-        let client_exists = {
-            let guard = client_cache.lock().await;
-            guard.is_some()
-        }; // Lock automatically dropped here
-        
-        if !client_exists {
-            eprintln!("🔄 No cached gRPC client, creating new connection...");
-            // Setup new connection
-            let new_client = Self::setup_lnc_client(mailbox).await?;
-            // Store the client
-            let mut client_guard = client_cache.lock().await;
-            *client_guard = Some(new_client);
-        } else {
+        // Atomically take the cached client. If it is absent (first call or prior error),
+        // create a fresh one. This single lock-and-take eliminates the TOCTOU window that
+        // existed when check and take were two separate lock acquisitions.
+        let cached = client_cache.lock().await.take();
+        let mut lightning_client = if let Some(client) = cached {
             eprintln!("✅ Reusing cached gRPC client");
-        }
+            client
+        } else {
+            eprintln!("🔄 No cached gRPC client, creating new connection...");
+            Self::setup_lnc_client(mailbox).await?
+        };
 
-        // Take the client out of the cache (we'll put it back after the call)
-        let mut lightning_client = client_cache.lock().await.take().unwrap();
-        drop(client_cache.lock().await); // CRITICAL: Release lock before making async gRPC call!
-
-        // Get auth data for metadata
-        let auth_data = mailbox.lock().await.auth_data.clone();
-        
         eprintln!("📤 Sending AddInvoice request...");
-        let mut request = Request::new(invoice);
-        
-        // Add authentication headers
-        if let Some(ref auth_str) = auth_data {
-            if let Some(macaroon_hex) = auth_str.strip_prefix("Macaroon: ") {
-                if let Ok(v) = tonic::metadata::AsciiMetadataValue::try_from(macaroon_hex) {
-                    request.metadata_mut().insert("macaroon", v);
-                }
-            }
-        }
-
-        match lightning_client.add_invoice(request).await {
+        // MacaroonInterceptor (baked into the client at setup time) handles auth — no manual insert needed.
+        match lightning_client.add_invoice(Request::new(invoice)).await {
             Ok(response) => {
                 eprintln!("✅ LNC AddInvoice successful");
-                // Put the client back in the cache
-                let mut client_guard = client_cache.lock().await;
-                *client_guard = Some(lightning_client);
+                *client_cache.lock().await = Some(lightning_client);
                 Ok(response.into_inner())
             }
             Err(e) => {
                 eprintln!("❌ AddInvoice failed: {}", e);
-                // DO NOT cache the client on error - the connection is likely broken.
-                // Forcing a fresh LNC session (new Noise handshake) on the next request.
+                // Do not cache on error — connection is likely broken; force fresh handshake.
                 // TODO: Investigate GoBN seq wrap-around causing Noise nonce desync
                 Err(format!("gRPC call failed: {}", e).into())
             }
@@ -473,11 +446,12 @@ impl LNDWrapper {
         }
         eprintln!("✅ HTTP/2 SETTINGS exchange complete, proceeding with GetInfo");
 
-        // Build LightningClient — macaroon is injected per-request from auth_data.
+        // Build LightningClient with macaroon baked into the interceptor.
+        // Fail fast here rather than silently injecting an empty macaroon on every RPC.
         let macaroon_hex = auth_data
             .as_deref()
             .and_then(|s| s.strip_prefix("Macaroon: "))
-            .unwrap_or("")
+            .ok_or("LNC auth_data missing or has no 'Macaroon: ' prefix after handshake")?
             .to_string();
         let client = make_lightning_client(channel, macaroon_hex)?;
 
@@ -512,10 +486,8 @@ impl lnclient::LNClient for LNDWrapper {
                         .map(|r| r.into_inner())
                         .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::new(e) })
                 }
-                LNDConnectionType::LNC { mailbox, client, pairing_phrase, mailbox_server } => {
-                    Self::add_invoice_via_lnc(
-                        &mailbox, &client, &pairing_phrase, &mailbox_server, invoice,
-                    ).await
+                LNDConnectionType::LNC { mailbox, client, .. } => {
+                    Self::add_invoice_via_lnc(&mailbox, &client, invoice).await
                 }
             }
         })
@@ -535,11 +507,13 @@ impl AsyncRead for MailboxConnectionWrapper {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        // Try to lock and delegate
         match self.connection.try_lock() {
             Ok(mut conn) => Pin::new(&mut *conn).poll_read(cx, buf),
             Err(_) => {
-                cx.waker().wake_by_ref();
+                // Park rather than spin: wake the task once the lock holder releases.
+                let conn = Arc::clone(&self.connection);
+                let waker = cx.waker().clone();
+                tokio::spawn(async move { drop(conn.lock().await); waker.wake(); });
                 std::task::Poll::Pending
             }
         }
@@ -555,12 +529,14 @@ impl AsyncWrite for MailboxConnectionWrapper {
         match self.connection.try_lock() {
             Ok(mut conn) => Pin::new(&mut *conn).poll_write(cx, buf),
             Err(_) => {
-                cx.waker().wake_by_ref();
+                let conn = Arc::clone(&self.connection);
+                let waker = cx.waker().clone();
+                tokio::spawn(async move { drop(conn.lock().await); waker.wake(); });
                 std::task::Poll::Pending
             }
         }
     }
-    
+
     fn poll_flush(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -568,12 +544,14 @@ impl AsyncWrite for MailboxConnectionWrapper {
         match self.connection.try_lock() {
             Ok(mut conn) => Pin::new(&mut *conn).poll_flush(cx),
             Err(_) => {
-                cx.waker().wake_by_ref();
+                let conn = Arc::clone(&self.connection);
+                let waker = cx.waker().clone();
+                tokio::spawn(async move { drop(conn.lock().await); waker.wake(); });
                 std::task::Poll::Pending
             }
         }
     }
-    
+
     fn poll_shutdown(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -581,7 +559,9 @@ impl AsyncWrite for MailboxConnectionWrapper {
         match self.connection.try_lock() {
             Ok(mut conn) => Pin::new(&mut *conn).poll_shutdown(cx),
             Err(_) => {
-                cx.waker().wake_by_ref();
+                let conn = Arc::clone(&self.connection);
+                let waker = cx.waker().clone();
+                tokio::spawn(async move { drop(conn.lock().await); waker.wake(); });
                 std::task::Poll::Pending
             }
         }
