@@ -48,7 +48,7 @@ impl EclairWrapper {
 
         // Ensure API URL has a scheme
         if !eclair_options.api_url.starts_with("http://") && !eclair_options.api_url.starts_with("https://") {
-            eclair_options.api_url = format!("http://{}", eclair_options.api_url);
+            eclair_options.api_url = format!("https://{}", eclair_options.api_url);
         }
 
         println!("Eclair client connecting to {}", eclair_options.api_url);
