@@ -59,7 +59,10 @@ impl lnclient::LNClient for CLNWrapper {
             let client = client_guard.as_mut().unwrap();
             
             let invoice_request = InvoiceRequest {
-                amount_msat: AmountOrAny::Amount(Amount::from_msat(invoice.value_msat as u64)),
+                amount_msat: AmountOrAny::Amount(Amount::from_msat(
+                    u64::try_from(invoice.value_msat)
+                        .map_err(|_| format!("invalid value_msat: {}", invoice.value_msat))?,
+                )),
                 description: invoice.memo,
                 label: format!("l402-{}", Uuid::new_v4()),
                 expiry: None,
