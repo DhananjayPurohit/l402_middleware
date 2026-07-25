@@ -84,4 +84,51 @@ impl lnclient::LNClient for CLNWrapper {
             })
         })
     }
+
+    fn lookup_invoice(
+        &self,
+        payment_hash: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>>> + Send>>
+    {
+        use cln_rpc::model::requests::ListinvoicesRequest;
+        use cln_rpc::model::responses::ListinvoicesInvoicesStatus;
+
+        let client = Arc::clone(&self.client);
+        let lightning_dir = self.lightning_dir.clone();
+
+        Box::pin(async move {
+            let mut client_guard = client.lock().await;
+            if client_guard.is_none() {
+                let new_client = ClnRpc::new(Path::new(&lightning_dir))
+                    .await
+                    .map_err(|e| format!("CLN RPC error: {}", e))?;
+                *client_guard = Some(new_client);
+            }
+            let client = client_guard.as_mut().unwrap();
+
+            let request = ListinvoicesRequest {
+                payment_hash: Some(hex::encode(&payment_hash)),
+                label: None,
+                invstring: None,
+                offer_id: None,
+                index: None,
+                start: None,
+                limit: None,
+            };
+            let resp = client
+                .call_typed(&request)
+                .await
+                .map_err(|e| format!("CLN listinvoices error: {}", e))?;
+
+            match resp.invoices.into_iter().next() {
+                Some(inv) if inv.status == ListinvoicesInvoicesStatus::PAID => {
+                    match inv.payment_preimage {
+                        Some(preimage) => Ok(Some(preimage.to_vec())),
+                        None => Err("CLN invoice settled but preimage missing".into()),
+                    }
+                }
+                _ => Ok(None),
+            }
+        })
+    }
 }

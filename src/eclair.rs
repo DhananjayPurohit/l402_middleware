@@ -150,4 +150,60 @@ impl lnclient::LNClient for EclairWrapper {
             })
         })
     }
+
+    fn lookup_invoice(
+        &self,
+        payment_hash: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>>> + Send>>
+    {
+        let client = self.client.clone();
+        let api_url = self.api_url.clone();
+        let password = self.password.clone();
+
+        Box::pin(async move {
+            let payment_hash_hex = hex::encode(&payment_hash);
+            let url = format!("{}/getreceivedinfo", api_url.trim_end_matches('/'));
+
+            let response = client
+                .post(&url)
+                .basic_auth("", Some(&password))
+                .form(&[("paymentHash", &payment_hash_hex)])
+                .send()
+                .await
+                .map_err(|e| format!("Eclair getreceivedinfo request failed: {}", e))?;
+
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            if !response.status().is_success() {
+                return Err(
+                    format!("Eclair getreceivedinfo returned HTTP {}", response.status()).into(),
+                );
+            }
+
+            // Eclair returns {"status": {"type": "received", ...}, "paymentPreimage": "hex"}
+            let body: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| format!("Eclair JSON parse error: {}", e))?;
+
+            let status_type = body
+                .get("status")
+                .and_then(|s| s.get("type"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
+
+            if status_type == "received" {
+                let preimage_hex = body
+                    .get("paymentPreimage")
+                    .and_then(|p| p.as_str())
+                    .ok_or("Eclair: paymentPreimage field missing")?;
+                hex::decode(preimage_hex)
+                    .map(Some)
+                    .map_err(|e| format!("Failed to hex-decode Eclair preimage: {}", e).into())
+            } else {
+                Ok(None)
+            }
+        })
+    }
 }
