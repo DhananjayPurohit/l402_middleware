@@ -15,6 +15,19 @@ pub const L402_HEADER_NAME: &str = "Accept-Authenticate";
 pub const L402_AUTHENTICATE_HEADER_NAME: &str = "WWW-Authenticate";
 pub const L402_AUTHORIZATION_HEADER_NAME: &str = "Authorization";
 
+/// Format the `WWW-Authenticate` challenge value for an L402 `402` response.
+///
+/// Produces the RFC 7235-style header with **quoted** auth-param values:
+/// `L402 macaroon="<macaroon>", invoice="<bolt11>"`. This is the single source
+/// of truth for the challenge wire format — consumers must call this rather than
+/// hand-rolling the string, so the quoting can't drift between them.
+pub fn format_challenge(macaroon: &str, invoice: &str) -> String {
+    format!(
+        "{} macaroon=\"{}\", invoice=\"{}\"",
+        L402_HEADER, macaroon, invoice
+    )
+}
+
 #[derive(Clone)]
 pub struct L402Info {
 	pub	l402_type: String,
@@ -91,6 +104,21 @@ pub fn verify_l402(
         Err(error) => {
             Err(format!("Error validating macaroon: {:?}", error).into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_challenge;
+
+    #[test]
+    fn challenge_uses_quoted_rfc_style() {
+        // Values MUST be quoted (RFC 7235). This locks the format so the two
+        // consumers can't drift apart again.
+        assert_eq!(
+            format_challenge("AGIAJEem", "lnbc10n1p"),
+            r#"L402 macaroon="AGIAJEem", invoice="lnbc10n1p""#
+        );
     }
 }
 
