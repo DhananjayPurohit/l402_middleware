@@ -4,6 +4,7 @@ use rocket::{request, Request};
 use hex;
 
 use crate::l402;
+use crate::caveats::RequestBinding;
 
 pub const L402_TYPE_FREE: &str = "FREE";
 pub const L402_TYPE_PAYMENT_REQUIRED: &str = "PAYMENT REQUIRED";
@@ -91,6 +92,24 @@ pub fn verify_l402(
             Err(format!("Error validating macaroon: {:?}", error).into())
         }
     }
+}
+
+/// Verify an L402 macaroon against a [`RequestBinding`] — the high-level entry
+/// point. Builds the binding's enforcing verifier (exact scope/method match +
+/// `ExpiresAt` time check + the reject-unknown-predicate guard) and checks the
+/// macaroon signature and payment-hash binding in one call.
+///
+/// Prefer this over [`verify_l402_with_verifier`] unless you need a bespoke
+/// verifier: it keeps the security-critical caveat policy in this crate, so
+/// consumers can't accidentally omit the guard.
+pub fn verify_l402_binding(
+    mac: &Macaroon,
+    binding: &RequestBinding,
+    root_key: Vec<u8>,
+    preimage: PaymentPreimage,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut verifier = binding.verifier();
+    verify_l402_with_verifier(mac, &mut verifier, root_key, preimage)
 }
 
 /// Verify L402 using a provided Verifier instance
