@@ -62,7 +62,7 @@ impl L402Middleware {
                             preimage: None,
                             payment_hash: None,
                             error: None,
-                            auth_header: format!("L402 macaroon={}, invoice={}", macaroon_string, invoice).into(),
+                            auth_header: Some(l402::format_challenge(&macaroon_string, &invoice)),
                         });
                     },
                     Err(error) => {

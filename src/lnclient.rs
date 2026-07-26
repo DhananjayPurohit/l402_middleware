@@ -37,6 +37,26 @@ pub trait LNClient: Send + Sync + 'static {
         &self,
         invoice: lnrpc::Invoice,
     ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>> + Send>>;
+
+    /// Server-side settlement lookup ("auto-detect"): given a payment hash, ask
+    /// the node whether the invoice is settled and, if so, return its preimage —
+    /// so a client that can't present a usable preimage still gets access.
+    ///
+    /// Returns `Ok(Some(preimage))` when settled, `Ok(None)` when the invoice
+    /// exists but isn't settled yet, and `Err` when the backend can't answer.
+    ///
+    /// Default: unsupported. Backends that can query their own node
+    /// (LND / CLN / Eclair) override this; remote-wallet backends
+    /// (LNURL / NWC / BOLT12) keep the default.
+    fn lookup_invoice(
+        &self,
+        _payment_hash: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>>> + Send>>
+    {
+        Box::pin(async {
+            Err("Server-side settlement lookup (auto-detect) is not supported for this backend".into())
+        })
+    }
 }
 
 pub struct LNClientConn {
@@ -76,5 +96,43 @@ impl LNClientConn {
         let payment_hash = PaymentHash(hash);
 
         Ok((invoice.to_string(), payment_hash))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A backend that only implements add_invoice; lookup_invoice falls back to
+    // the trait default — which must REJECT auto-detect. This locks the contract
+    // that LNURL/NWC/BOLT12 (no override) can't be used for settlement lookup.
+    // The live LND/CLN/Eclair lookups need a real node and are integration-only.
+    struct NoLookupClient;
+
+    impl LNClient for NoLookupClient {
+        fn add_invoice(
+            &self,
+            _invoice: lnrpc::Invoice,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn Error + Send + Sync>>>
+                    + Send,
+            >,
+        > {
+            Box::pin(async { unreachable!("add_invoice is not exercised in this test") })
+        }
+    }
+
+    #[test]
+    fn default_lookup_invoice_is_unsupported() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let client = NoLookupClient;
+        let result = rt.block_on(client.lookup_invoice(vec![0u8; 32]));
+        assert!(
+            result.is_err(),
+            "a backend without a lookup_invoice override must reject auto-detect"
+        );
     }
 }

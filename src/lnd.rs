@@ -492,6 +492,42 @@ impl lnclient::LNClient for LNDWrapper {
             }
         })
     }
+
+    fn lookup_invoice(
+        &self,
+        payment_hash: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>>> + Send>>
+    {
+        let connection = self.connection.clone();
+        Box::pin(async move {
+            match connection {
+                LNDConnectionType::Traditional(client_arc) => {
+                    let mut client = client_arc.lock().await;
+                    let request = lnrpc::PaymentHash {
+                        r_hash: payment_hash,
+                        ..Default::default()
+                    };
+                    match client.lookup_invoice(Request::new(request)).await {
+                        Ok(resp) => {
+                            let invoice = resp.into_inner();
+                            // InvoiceState: 0=OPEN, 1=SETTLED, 2=CANCELED, 3=ACCEPTED
+                            if invoice.state == 1 {
+                                Ok(Some(invoice.r_preimage))
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        Err(status) if status.code() == tonic::Code::NotFound => Ok(None),
+                        Err(e) => Err(Box::new(e) as Box<dyn Error + Send + Sync>),
+                    }
+                }
+                // The LNC mailbox transport doesn't expose LookupInvoice.
+                LNDConnectionType::LNC { .. } => Err(
+                    "Auto-detect is not supported over the LNC mailbox (no LookupInvoice)".into(),
+                ),
+            }
+        })
+    }
 }
 
 // ---- MailboxConnectionWrapper ---------------------------------------------------------
