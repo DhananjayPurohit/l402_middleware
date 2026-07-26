@@ -10,6 +10,8 @@ The middleware:-
 2. Verify the L402 before serving paid content.
 3. Send macaroon and invoice if the user prefers paid content and fails to present a valid L402.
 
+It also supports **location-scoped ("realm") tokens** via `caveats::RequestBinding` — one payment can authorize a whole route rather than a single path — and **server-side settlement detection** via `LNClient::lookup_invoice`, so clients that can't return a usable preimage still work (LND, CLN, Eclair).
+
 ![186736015-f956dfe1-cba0-4dc3-9755-9d22cb1c7e77](https://github.com/user-attachments/assets/afc099e2-d0b8-4344-9665-17a81f6907bc)
 
 
@@ -27,13 +29,13 @@ The middleware:-
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402_middleware = "2.1.0"
+l402_middleware = "2.3.0"
 ```
 
 By using the no-accept-authenticate-required feature, the check for the Accept-Authenticate header can be bypassed, allowing L402 to be treated as the default authentication option.
 ```toml
 [dependencies]
-l402_middleware = { version = "2.1.0", features = ["no-accept-authenticate-required"] }
+l402_middleware = { version = "2.3.0", features = ["no-accept-authenticate-required"] }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
@@ -157,6 +159,7 @@ pub async fn rocket() -> rocket::Rocket<rocket::Build> {
             nwc_config: None,
             cln_config: None,
             bolt12_config: None,
+            eclair_config: None,
             root_key: env::var("ROOT_KEY")
                 .expect("ROOT_KEY not found in .env")
                 .as_bytes()
