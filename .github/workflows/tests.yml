@@ -217,11 +217,12 @@ jobs:
 
       - name: Start cln
         run: |
-          # The relay carries NIP-47 traffic, so it has to answer before the
-          # plugin starts.
+          # nostr-relay is listed explicitly: --no-deps skips depends_on, and
+          # the NIP-47 plugin connects at startup, so it has to answer first.
           docker-compose -f docker-compose.yml up -d --no-deps nostr-relay
-          for i in $(seq 1 30); do
-            docker exec nostr-relay wget -q -O /dev/null http://127.0.0.1:8080 2>/dev/null && break
+          for i in $(seq 1 60); do
+            curl -sf -o /dev/null http://0.0.0.0:7000/ && break
+            if [ "$i" -eq 60 ]; then docker logs nostr-relay; exit 1; fi
             sleep 1
           done
 
@@ -229,7 +230,12 @@ jobs:
           sleep 5
 
           docker logs cln
-          echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
+          # The URI names the relay by its compose hostname, which only resolves
+          # inside the docker network. These tests run on the host, where the
+          # relay is published on 7000.
+          NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')
+          NWC_URI=${NWC_URI//nostr-relay%3A8080/127.0.0.1%3A7000}
+          echo "NWC_URI=$NWC_URI" >> $GITHUB_ENV
           echo "BOLT12_LN_OFFER=$(docker exec cln lightning-cli --network=regtest offer any "BOLT12 Test" | jq -r '.bolt12')" >> $GITHUB_ENV
 
           sudo chmod 777 /cln-socket/lightning-rpc
