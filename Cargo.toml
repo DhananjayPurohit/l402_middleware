@@ -1,6 +1,6 @@
 [package]
 name = "l402_middleware"
-version = "2.3.0"
+version = "2.3.1"
 description = "A middleware library for rust that provides handler functions to accept microtransactions before serving ad-free content or any paid APIs."
 readme = "README.md"
 documentation = "https://docs.rs/l402_middleware"
@@ -23,7 +23,7 @@ hex = "0.4.3"
 lightning = "0.2.2"
 lightning-invoice = "0.34.0"
 macaroon = "0.3.0"
-nwc = "0.41.0"
+nwc = "0.44.0"
 prost = "0.14"
 reqwest = { version = "0.12.7", features = ["json"] }
 rocket = { version = "0.5.0-rc.3", features = ["json"] }

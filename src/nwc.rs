@@ -47,8 +47,13 @@ impl lnclient::LNClient for NWCWrapper {
 
                     let decoded_invoice = Bolt11Invoice::from_signed(res.invoice.parse::<SignedRawBolt11Invoice>().unwrap()).unwrap();
                     let payment_addr = decoded_invoice.payment_secret();
+                    // payment_hash is optional in the NIP-47 response.
+                    let payment_hash = res
+                        .payment_hash
+                        .ok_or("NWC make_invoice response has no payment_hash")?;
                     lnrpc::AddInvoiceResponse {
-                        r_hash: hex::decode(&res.payment_hash).unwrap(),
+                        r_hash: hex::decode(&payment_hash)
+                            .map_err(|e| format!("invalid payment_hash from NWC: {}", e))?,
                         payment_request: res.invoice,
                         add_index: 0,
                         payment_addr: payment_addr.0.to_vec(),
