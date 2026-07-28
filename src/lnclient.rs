@@ -45,9 +45,9 @@ pub trait LNClient: Send + Sync + 'static {
     /// Returns `Ok(Some(preimage))` when settled, `Ok(None)` when the invoice
     /// exists but isn't settled yet, and `Err` when the backend can't answer.
     ///
-    /// Default: unsupported. Backends that can query their own node
-    /// (LND / CLN / Eclair) override this; remote-wallet backends
-    /// (LNURL / NWC / BOLT12) keep the default.
+    /// Default: unsupported. Backends that can query settlement override this
+    /// (LND / CLN / Eclair / BOLT12 / NWC); LNURL keeps the default, as a
+    /// lightning address gives no way to ask.
     fn lookup_invoice(
         &self,
         _payment_hash: Vec<u8>,

@@ -10,7 +10,9 @@ The middleware:-
 2. Verify the L402 before serving paid content.
 3. Send macaroon and invoice if the user prefers paid content and fails to present a valid L402.
 
-It also supports **location-scoped ("realm") tokens** via `caveats::RequestBinding` — one payment can authorize a whole route rather than a single path — and **server-side settlement detection** via `LNClient::lookup_invoice`, so clients that can't return a usable preimage still work (LND, CLN, Eclair).
+It also supports **location-scoped ("realm") tokens** via `caveats::RequestBinding` — one payment can authorize a whole route rather than a single path — and **server-side settlement detection** via `LNClient::lookup_invoice`, so clients that can't return a usable preimage still work.
+
+Settlement lookup is available on LND, CLN, BOLT12, and Eclair, and on NWC where the wallet implements the optional NIP-47 `lookup_invoice`. LNURL and LND over the LNC mailbox have no way to ask, and return an error. Settlement is always taken from the node's own status: a wallet knows the preimage of an invoice it minted before anyone pays it, so the preimage alone never counts as proof.
 
 ![186736015-f956dfe1-cba0-4dc3-9755-9d22cb1c7e77](https://github.com/user-attachments/assets/afc099e2-d0b8-4344-9665-17a81f6907bc)
 
@@ -29,13 +31,13 @@ It also supports **location-scoped ("realm") tokens** via `caveats::RequestBindi
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402_middleware = "2.3.0"
+l402_middleware = "2.3.2"
 ```
 
 By using the no-accept-authenticate-required feature, the check for the Accept-Authenticate header can be bypassed, allowing L402 to be treated as the default authentication option.
 ```toml
 [dependencies]
-l402_middleware = { version = "2.3.0", features = ["no-accept-authenticate-required"] }
+l402_middleware = { version = "2.3.2", features = ["no-accept-authenticate-required"] }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
