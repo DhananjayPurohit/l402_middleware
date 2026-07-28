@@ -68,4 +68,40 @@ impl lnclient::LNClient for NWCWrapper {
             Ok(response)
         })
     }
+
+    /// NIP-47 makes `lookup_invoice` optional, so wallets without it return an
+    /// error and auto-detect stays off for them.
+    fn lookup_invoice(
+        &self,
+        payment_hash: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+        let client = Arc::clone(&self.client);
+        Box::pin(async move {
+            let client = client.lock().await;
+
+            let request = LookupInvoiceRequest {
+                payment_hash: Some(hex::encode(&payment_hash)),
+                invoice: None,
+            };
+            let res = client
+                .lookup_invoice(request)
+                .await
+                .map_err(|e| format!("NWC lookup_invoice failed: {:?}", e))?;
+
+            // Settlement comes from the wallet's status, never from the presence
+            // of a preimage: the wallet minted this invoice, so it has known the
+            // preimage since before anyone paid it.
+            if res.state != Some(TransactionState::Settled) && res.settled_at.is_none() {
+                return Ok(None);
+            }
+
+            match res.preimage.as_deref().filter(|p| !p.is_empty()) {
+                Some(preimage) => Ok(Some(
+                    hex::decode(preimage)
+                        .map_err(|e| format!("invalid preimage from NWC: {}", e))?,
+                )),
+                None => Err("NWC invoice settled but preimage missing".into()),
+            }
+        })
+    }
 }

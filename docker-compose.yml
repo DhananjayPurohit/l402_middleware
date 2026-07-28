@@ -119,6 +119,14 @@ services:
       - "--remote.lit-debuglevel=trace"
 
 
+  nostr-relay:
+    image: scsibug/nostr-rs-relay:latest
+    container_name: nostr-relay
+    ports:
+      - "7000:8080"
+    volumes:
+      - nostr-relay-data:/usr/src/app/db
+
   cln:
     image: elementsproject/lightningd:v25.05
     container_name: cln
@@ -145,7 +153,7 @@ services:
           --addr=cln:9835 \
           --grpc-port=9996 \
           --plugin=/usr/local/libexec/c-lightning/plugins/cln-nip47 \
-          --nip47-relays=wss://relay.damus.io
+          --nip47-relays=ws://nostr-relay:8080
     ports:
       - "9835:9835"
       - "9996:9996"
@@ -175,6 +183,7 @@ volumes:
   lndnode-data:
   litd-data:
   cln-data:
+  nostr-relay-data:
   eclair-data:
   tor-data:
 

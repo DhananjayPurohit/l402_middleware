@@ -25,6 +25,18 @@ pub trait Bolt12Backend: Send + Sync {
         amount_msat: u64,
         memo: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Result<(String, Vec<u8>, Option<Vec<u8>>), Box<dyn Error + Send + Sync>>> + Send>>;
+
+    /// Return the preimage once the invoice for `payment_hash` is settled.
+    ///
+    /// Default: unsupported, for backends that can't query their own node.
+    fn lookup_invoice(
+        &self,
+        _payment_hash: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>>> + Send>> {
+        Box::pin(async {
+            Err("Server-side settlement lookup (auto-detect) is not supported for this BOLT12 backend".into())
+        })
+    }
 }
 
 /// CLN Implementation of Bolt12Backend
@@ -114,6 +126,59 @@ impl Bolt12Backend for ClnBolt12Backend {
             Ok((invoice_str, payment_hash_bytes, payment_secret))
         })
     }
+
+    /// Invoices fetched from the offer settle on this CLN node, so they are in
+    /// its local database like any other.
+    fn lookup_invoice(
+        &self,
+        payment_hash: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>>> + Send>> {
+        use cln_rpc::model::requests::ListinvoicesRequest;
+        use cln_rpc::model::responses::ListinvoicesInvoicesStatus;
+
+        let client = Arc::clone(&self.client);
+        let lightning_dir = self.lightning_dir.clone();
+
+        Box::pin(async move {
+            let mut client_guard = client.lock().await;
+
+            if client_guard.is_none() {
+                let new_client = ClnRpc::new(Path::new(&lightning_dir)).await
+                    .map_err(|e| format!("CLN RPC error: {}", e))?;
+                *client_guard = Some(new_client);
+            }
+
+            let client = client_guard.as_mut().unwrap();
+
+            let request = ListinvoicesRequest {
+                payment_hash: Some(hex::encode(&payment_hash)),
+                label: None,
+                invstring: None,
+                offer_id: None,
+                index: None,
+                start: None,
+                limit: None,
+            };
+
+            let resp = match client.call_typed(&request).await {
+                Ok(res) => res,
+                Err(e) => {
+                    *client_guard = None;
+                    return Err(format!("CLN listinvoices error: {}", e).into());
+                }
+            };
+
+            match resp.invoices.into_iter().next() {
+                Some(inv) if inv.status == ListinvoicesInvoicesStatus::PAID => {
+                    match inv.payment_preimage {
+                        Some(preimage) => Ok(Some(preimage.to_vec())),
+                        None => Err("CLN invoice settled but preimage missing".into()),
+                    }
+                }
+                _ => Ok(None),
+            }
+        })
+    }
 }
 
 pub struct Bolt12Wrapper {
@@ -171,6 +236,15 @@ impl lnclient::LNClient for Bolt12Wrapper {
                 },
             })
         })
+    }
+
+    fn lookup_invoice(
+        &self,
+        payment_hash: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>>> + Send>> {
+        let backend = Arc::clone(&self.backend);
+
+        Box::pin(async move { backend.lookup_invoice(payment_hash).await })
     }
 }
 
