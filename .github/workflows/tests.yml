@@ -217,6 +217,14 @@ jobs:
 
       - name: Start cln
         run: |
+          # The relay carries NIP-47 traffic, so it has to answer before the
+          # plugin starts.
+          docker-compose -f docker-compose.yml up -d --no-deps nostr-relay
+          for i in $(seq 1 30); do
+            docker exec nostr-relay wget -q -O /dev/null http://127.0.0.1:8080 2>/dev/null && break
+            sleep 1
+          done
+
           docker-compose -f docker-compose.yml up -d --no-deps cln
           sleep 5
 
