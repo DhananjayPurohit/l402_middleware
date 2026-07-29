@@ -26,18 +26,76 @@ Settlement lookup is available on LND, CLN, BOLT12, and Eclair, and on NWC where
 | **Authorization**      | Sent by the client to provide the macaroon and preimage (proof of payment) to access the resource.         | Used by the client after payment or authentication to prove access rights.                                  | `Authorization: L402 <macaroon>:<preimage>`                                                                                                  |
 
 
+## Caveats: what a token is bound to
+
+A macaroon carries caveats that limit where it can be spent. The crate
+understands four:
+
+| Caveat | Meaning |
+|---|---|
+| `RequestPath = /exact/path` | Valid for exactly one URL |
+| `Realm = name` | Valid for every path the server maps to that realm |
+| `RequestMethod = GET` | Valid for one HTTP method |
+| `ExpiresAt = <unix seconds>` | Valid until an absolute time |
+
+`RequestPath` and `Realm` are alternatives — a token carries one or the other,
+never both. Build them with `caveats::RequestBinding` rather than by hand, so
+minting and verification cannot drift apart:
+
+```rust
+use l402_middleware::caveats::RequestBinding;
+
+// Exact path — one payment buys one URL. The default.
+let binding = RequestBinding::path(req.uri().path().to_string(), "GET");
+
+// Realm — one payment buys every route naming "library".
+let binding = RequestBinding::realm("library", "GET");
+
+// Either can expire.
+let binding = binding.with_expiry(Some(expires_at_unix_seconds));
+
+let caveats = binding.to_caveats();   // mint these into the macaroon
+```
+
+Verify with the same binding:
+
+```rust
+use l402_middleware::l402;
+
+l402::verify_l402_binding(&mac, &binding, root_key, preimage)?;
+```
+
+**Bind the method.** A binding always carries `RequestMethod`, so a token bought
+for `GET` will not satisfy a `POST`. Hand-rolled caveat lists frequently omit
+this, and a token that ignores the method is a token that can be replayed
+against a different handler on the same path.
+
+**Use `verify_l402_binding` where scope matters.** The older `verify_l402`
+exact-matches whatever caveat strings you hand it. It cannot evaluate
+`ExpiresAt` — it compares the string, so an expired token still matches — and it
+has no notion of realms. `verify_l402_binding` enforces scope and method by
+exact match, checks expiry against the clock, and rejects any scope or method
+predicate it was not given rather than letting it pass.
+
+That last part is the security-critical one: a verifier that lets an unknown
+`RequestPath` or `Realm` predicate fall through to "satisfied" will accept a
+token minted for a different route. `RequestBinding::verifier` is the single
+place that guard lives, and the bypass tests at the bottom of `caveats.rs` cover
+it.
+
+
 ## Installation
 
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402_middleware = "2.3.2"
+l402_middleware = "2.3.3"
 ```
 
 By using the no-accept-authenticate-required feature, the check for the Accept-Authenticate header can be bypassed, allowing L402 to be treated as the default authentication option.
 ```toml
 [dependencies]
-l402_middleware = { version = "2.3.2", features = ["no-accept-authenticate-required"] }
+l402_middleware = { version = "2.3.3", features = ["no-accept-authenticate-required"] }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
@@ -56,6 +114,7 @@ use std::sync::Arc;
 use reqwest::Client;
 
 use l402_middleware::{l402, lnclient, lnd, lnurl, nwc, cln, bolt12, eclair, middleware};
+use l402_middleware::caveats::RequestBinding;
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -96,11 +155,12 @@ impl FiatRateConfig {
     }
 }
 
-// Function to add caveats, can customize it based on authentication needs
+// Caveats the macaroon will carry. Customize as authentication needs require —
+// but build them with RequestBinding, which also binds the HTTP method so a
+// token bought for GET cannot be replayed against POST on the same path.
 fn path_caveat(req: &Request<'_>) -> Vec<String> {
-    vec![
-        format!("RequestPath = {}", req.uri().path()),
-    ]
+    RequestBinding::path(req.uri().path().to_string(), req.method().as_str())
+        .to_caveats()
 }
 
 #[derive(Serialize)]
