@@ -17,6 +17,12 @@ use crate::lndrpc::lnrpc;
 use crate::lnclient;
 use crate::lnc;
 
+/// Budget for the whole direct handshake — TCP connect and TLS together.
+/// Neither gives up on its own before the OS does, minutes away, and a request
+/// waits on both. One budget rather than one each, so the total stays
+/// predictable for whatever guard the caller has around the request.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
 // ---- TLS stream wrappers for custom connectors -----------------------------------------
 
 trait AsyncReadWrite: AsyncRead + AsyncWrite {}
@@ -237,18 +243,28 @@ impl LNDWrapper {
             let port = port;
             let ctx = Arc::clone(&ssl_context);
             async move {
-                let tcp = tokio::net::TcpStream::connect(format!("{}:{}", host, port))
-                    .await
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                let mut ssl = Ssl::new(ctx.as_ref())
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                ssl.set_hostname(&host)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                let mut tls = SslStream::new(ssl, tcp)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                Pin::new(&mut tls).connect().await
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                Ok::<_, std::io::Error>(TokioIo::new(Box::pin(TlsStreamWrapper(tls)) as Pin<Box<dyn AsyncReadWrite + Send>>))
+                let target = format!("{}:{}", host, port);
+                timeout(CONNECT_TIMEOUT, async {
+                    let tcp = tokio::net::TcpStream::connect(&target)
+                        .await
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    let mut ssl = Ssl::new(ctx.as_ref())
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    ssl.set_hostname(&host)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    let mut tls = SslStream::new(ssl, tcp)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    Pin::new(&mut tls).connect().await
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    Ok::<_, std::io::Error>(TokioIo::new(Box::pin(TlsStreamWrapper(tls)) as Pin<Box<dyn AsyncReadWrite + Send>>))
+                })
+                .await
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("handshake with {} timed out", target),
+                    )
+                })?
             }
         });
         let channel = Endpoint::from_str(&format!("https://{}:{}", host, port))
@@ -308,7 +324,15 @@ impl LNDWrapper {
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                 let mut tls = SslStream::new(ssl, tcp)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                Pin::new(&mut tls).connect().await
+                // Same 30s as the proxy leg above: Tor is slow, but not endless.
+                timeout(Duration::from_secs(30), Pin::new(&mut tls).connect())
+                    .await
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "TLS handshake through SOCKS5 timed out",
+                        )
+                    })?
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                 Ok::<_, std::io::Error>(TokioIo::new(Box::pin(TlsStreamWrapper(tls)) as Pin<Box<dyn AsyncReadWrite + Send>>))
             }

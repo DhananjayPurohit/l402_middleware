@@ -97,7 +97,11 @@ impl lnclient::LNClient for LnAddressUrlResJson {
 }
 
 async fn do_get_request(url: &str) -> Result<String, Error> {
-    let client = Client::new();
+    // The caller is holding a request open while this runs, so a provider that
+    // stops answering has to fail rather than block indefinitely.
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
 
     let raw_resp = client.get(url).send().await?;
     let resp = raw_resp.error_for_status()?;
