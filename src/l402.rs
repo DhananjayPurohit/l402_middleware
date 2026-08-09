@@ -64,8 +64,10 @@ fn macaroon_id_matches_payment_hash(id_bytes: &[u8], payment_hash: &PaymentHash)
     } else if id_bytes.len() == 32 {
         id_bytes == expected
     } else {
-        // Fallback for unexpected identifier lengths: hex substring match.
-        hex::encode(id_bytes).contains(&hex::encode(expected))
+        // Identifiers from other issuers may carry extra bytes around the hash.
+        // Search the raw bytes, not hex: a hex substring also matches at nibble
+        // offsets, where the bytes hold no aligned copy of the hash.
+        id_bytes.windows(32).any(|w| w == expected)
     }
 }
 
@@ -118,6 +120,34 @@ mod tests {
         assert_eq!(
             format_challenge("AGIAJEem", "lnbc10n1p"),
             r#"L402 macaroon="AGIAJEem", invoice="lnbc10n1p""#
+        );
+    }
+
+    #[test]
+    fn payment_binding_matches_bytes_not_hex_nibbles() {
+        use lightning::types::payment::PaymentHash;
+
+        let ph = PaymentHash([0xabu8; 32]);
+
+        // Both exact forms.
+        assert!(super::macaroon_id_matches_payment_hash(&ph.0, &ph));
+        let mut prefixed = vec![0xffu8];
+        prefixed.extend_from_slice(&ph.0);
+        assert!(super::macaroon_id_matches_payment_hash(&prefixed, &ph));
+
+        // Foreign issuer framing the hash with extra bytes still binds.
+        let mut framed = vec![0u8; 8];
+        framed.extend_from_slice(&ph.0);
+        framed.extend_from_slice(&[1u8; 4]);
+        assert!(super::macaroon_id_matches_payment_hash(&framed, &ph));
+
+        // hex("0a" + "ba"*32) contains hex(ph) at an odd index, yet no aligned
+        // copy of the hash exists in the bytes. The hex-substring test matched.
+        let mut nibble = vec![0x0au8];
+        nibble.extend_from_slice(&[0xbau8; 32]);
+        assert!(
+            !super::macaroon_id_matches_payment_hash(&nibble, &ph),
+            "nibble-offset hex match must not bind"
         );
     }
 }

@@ -361,8 +361,8 @@ impl LNDWrapper {
             && trimmed.chars().all(|c| c.is_ascii_hexdigit());
 
         let pairing_data = if is_hex {
+            // Never log `trimmed` — it is the raw LNC pairing entropy.
             eprintln!("Detected entropy hex format, parsing directly...");
-            eprintln!("Entropy hex: {}", trimmed);
             // It's a hex string - use entropy directly
             lnc::parse_pairing_phrase_from_entropy(trimmed)?
         } else {

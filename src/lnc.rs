@@ -349,11 +349,12 @@ pub fn parse_pairing_phrase(phrase: &str) -> Result<LNCPairingData, Box<dyn Erro
     // Convert mnemonic to entropy bytes
     let passphrase_entropy = mnemonic_to_entropy(&words)?;
     
-    eprintln!("Passphrase entropy ({} bytes): {}", passphrase_entropy.len(), hex::encode(&passphrase_entropy));
+    // Never log the entropy — stream ID and SPAKE2 passphrase both derive from it.
+    eprintln!("Passphrase entropy: {} bytes", passphrase_entropy.len());
     
     // Derive stream ID from passphrase entropy using SHA-512
     let stream_id = derive_stream_id(&passphrase_entropy);
-    eprintln!("Stream ID ({} bytes): {}", stream_id.len(), hex::encode(&stream_id));
+    eprintln!("Stream ID: {} bytes", stream_id.len());
     
     // Generate a new local keypair for the session
     // In a real implementation, this should be persisted and reused
@@ -381,10 +382,11 @@ pub fn parse_pairing_phrase_from_entropy(entropy_hex: &str) -> Result<LNCPairing
     let passphrase_entropy = hex::decode(entropy_hex.trim())
         .map_err(|e| format!("Invalid entropy hex: {}", e))?;
     
-    eprintln!("Passphrase entropy ({} bytes): {}", passphrase_entropy.len(), hex::encode(&passphrase_entropy));
+    // Never log the entropy — stream ID and SPAKE2 passphrase both derive from it.
+    eprintln!("Passphrase entropy: {} bytes", passphrase_entropy.len());
     
     let stream_id = derive_stream_id(&passphrase_entropy);
-    eprintln!("Stream ID ({} bytes): {}", stream_id.len(), hex::encode(&stream_id));
+    eprintln!("Stream ID: {} bytes", stream_id.len());
     
     let secp = Secp256k1::new();
     let mut secret_bytes = [0u8; 32];
@@ -468,7 +470,7 @@ impl LNCMailbox {
     /// 1. Encrypt 2-byte length header -> 18 bytes (2 + 16 MAC)
     /// 2. Encrypt message body -> N + 16 bytes
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        eprintln!("🔒 Encrypting {} bytes to send: {:02x?}", plaintext.len(), &plaintext[..plaintext.len().min(50)]);
+        eprintln!("🔒 Encrypting {} bytes to send", plaintext.len());
         
         let cipher = self.send_cipher.as_ref()
             .ok_or("Send cipher not initialized. Complete the Noise handshake before encrypting.")?;
@@ -560,7 +562,7 @@ impl LNCMailbox {
         let plaintext = cipher.decrypt(nonce, encrypted_body)
             .map_err(|e| format!("Failed to decrypt body: {}", e))?;
         
-        eprintln!("🔓 Decrypted {} bytes from server: {:02x?}", plaintext.len(), &plaintext[..plaintext.len().min(50)]);
+        eprintln!("🔓 Decrypted {} bytes from server", plaintext.len());
         
         if plaintext.len() != expected_length {
             return Err(format!(
@@ -602,14 +604,14 @@ impl LNCMailbox {
             eprintln!("✅ Passphrase stretched");
         }
         
-        let stream_id_hex = hex::encode(&self.stream_id);
         let receive_sid = self.get_receive_sid();
         let send_sid = self.get_send_sid();
-        
+
+        // Never log stream IDs — they let an attacker occupy the mailbox stream.
         eprintln!("Connecting to mailbox server");
-        eprintln!("  Full Stream ID ({} bytes): {}", self.stream_id.len(), stream_id_hex);
-        eprintln!("  Receive SID (server→client): {}", hex::encode(&receive_sid));
-        eprintln!("  Send SID (client→server): {}", hex::encode(&send_sid));
+        eprintln!("  Full Stream ID: {} bytes", self.stream_id.len());
+        eprintln!("  Receive SID: {} bytes", receive_sid.len());
+        eprintln!("  Send SID: {} bytes", send_sid.len());
         
         self.connect_to_mailbox().await
     }
@@ -720,7 +722,7 @@ impl LNCMailbox {
         );
         
         eprintln!("📤 Sending GoBN SYN to server (client→server stream)");
-        eprintln!("   Stream ID: {}", hex::encode(&send_sid[..]));
+        eprintln!("   Stream ID: {} bytes", send_sid.len());
         if let Err(e) = send_write.send(Message::Text(syn_msg)).await {
             let _ = send_write.close().await;
             return Err(format!("Failed to send GoBN SYN: {}", e).into());
@@ -744,7 +746,7 @@ impl LNCMailbox {
         // Subscribe to the receive stream
         let recv_init = format!(r#"{{"stream_id":"{}"}}"#, receive_sid_base64);
         eprintln!("📤 Subscribing to RECEIVE stream (server→client)");
-        eprintln!("   Stream ID: {}", hex::encode(&receive_sid[..]));
+        eprintln!("   Stream ID: {} bytes", receive_sid.len());
         if let Err(e) = recv_write.send(Message::Text(recv_init)).await {
             let _ = recv_write.close().await;
             let _ = send_write.close().await;
@@ -981,7 +983,7 @@ impl LNCMailbox {
                 Err(format!("Unexpected response from server: {}", text).into())
             }
             Ok(Message::Binary(data)) => {
-                eprintln!("📥 Binary response ({} bytes): {:02x?}", data.len(), &data[..data.len().min(20)]);
+                eprintln!("📥 Binary response ({} bytes)", data.len());
                 
                 if data.len() >= 2 && data[0] == GBN_MSG_SYN {
                     let server_n = data[1];
@@ -1830,7 +1832,8 @@ impl NoiseHandshakeState {
         // Store authentication data from Act 2 payload
         if let Some(payload) = auth_payload {
             let auth_str = String::from_utf8_lossy(&payload).to_string();
-            eprintln!("🔐 Received authentication data in Act 2: {}", auth_str);
+            // Never log auth_str — it is the session credential sent as gRPC metadata.
+            eprintln!("🔐 Received authentication data in Act 2 ({} bytes)", auth_str.len());
             self.auth_data = Some(auth_str);
         }
         
@@ -2265,7 +2268,6 @@ impl MailboxConnection {
     /// Send an encrypted message through the mailbox
     pub async fn send_encrypted(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
         eprintln!("🔒 Encrypting {} bytes for transmission", data.len());
-        eprintln!("   First 20 bytes (plaintext): {:02x?}", &data[..data.len().min(20)]);
         
         let mut mailbox = self.mailbox.lock().await;
         // Encrypt with Noise cipher
@@ -2295,7 +2297,7 @@ impl MailboxConnection {
         let mut mailbox = self.mailbox.lock().await;
         let decrypted = mailbox.decrypt(&noise_msg)?;
         
-        eprintln!("✅ Decrypted to {} bytes: {:02x?}", decrypted.len(), &decrypted[..decrypted.len().min(50)]);
+        eprintln!("✅ Decrypted to {} bytes", decrypted.len());
         
         Ok(decrypted)
     }
@@ -2393,7 +2395,7 @@ impl tokio::io::AsyncRead for MailboxConnection {
                     return Ok(());
                 }
                 
-                eprintln!("📥 Received {} bytes of encrypted Noise data: {:02x?}", noise_encrypted.len(), &noise_encrypted[..noise_encrypted.len().min(20)]);
+                eprintln!("📥 Received {} bytes of encrypted Noise data", noise_encrypted.len());
                 
                 // Add to encrypted buffer
                 let mut enc_buf = encrypted_buf_arc.lock().await;
@@ -2468,7 +2470,7 @@ impl tokio::io::AsyncRead for MailboxConnection {
                             } else {
                                 // Real decryption error - could be connection closing or corrupted data
                                 eprintln!("   ❌ Decryption error: {}", e);
-                                eprintln!("   📊 Encrypted buffer contents ({} bytes): {:02x?}", enc_buf.len(), &enc_buf[..enc_buf.len().min(50)]);
+                                eprintln!("   📊 Encrypted buffer: {} bytes", enc_buf.len());
                                 eprintln!("   🔢 Buffer length: {}, Nonce before: {}, Nonce after: {}", enc_buf_len_before, recv_nonce_before, mailbox_guard.recv_nonce);
                                 
                                 // Check if this might be a connection close or error message
@@ -2618,8 +2620,8 @@ fn parse_settings_frame(payload: &[u8], flags: u8) {
 }
 
 fn parse_headers_frame(payload: &[u8], flags: u8) {
+    // Never log HEADERS contents — they carry the gRPC session auth credential.
     eprintln!("   📨 HEADERS frame payload: {} bytes, flags=0x{:02x}", payload.len(), flags);
-    eprintln!("   📨 First 50 bytes: {:02x?}", &payload[..payload.len().min(50)]);
     
     // Try to find recognizable patterns
     if let Ok(s) = std::str::from_utf8(payload) {
