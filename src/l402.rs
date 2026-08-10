@@ -1,5 +1,5 @@
 use lightning::types::payment::{PaymentHash, PaymentPreimage};
-use macaroon::{Macaroon, Verifier, MacaroonKey};
+use macaroon::{Macaroon, Verifier, MacaroonKey, Caveat};
 use rocket::{request, Request};
 use hex;
 
@@ -77,10 +77,21 @@ pub fn verify_l402(
     root_key: Vec<u8>,
     preimage: PaymentPreimage,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // caveat verification
-    let mac_caveats = mac.first_party_caveats();
-    if caveats.len() > mac_caveats.len() {
-        return Err("Error validating macaroon: Caveats don't match".into());
+    // verify() checks macaroon ⊆ required; nothing checks the reverse, so a
+    // duplicate can pad the count in place of a missing caveat.
+    let mac_predicates: Vec<Vec<u8>> = mac
+        .first_party_caveats()
+        .into_iter()
+        .filter_map(|c| match c {
+            Caveat::FirstParty(fp) => Some(fp.predicate().0),
+            _ => None,
+        })
+        .collect();
+
+    for required in &caveats {
+        if !mac_predicates.iter().any(|p| p.as_slice() == required.as_bytes()) {
+            return Err("Error validating macaroon: Caveats don't match".into());
+        }
     }
 
     let mac_key = MacaroonKey::generate(&root_key);
@@ -149,6 +160,58 @@ mod tests {
             !super::macaroon_id_matches_payment_hash(&nibble, &ph),
             "nibble-offset hex match must not bind"
         );
+    }
+
+    #[test]
+    fn every_required_caveat_must_be_present() {
+        use lightning::types::payment::{PaymentHash, PaymentPreimage};
+        use macaroon::{ByteString, Macaroon, MacaroonKey};
+
+        let root_key = vec![7u8; 32];
+        let key = MacaroonKey::generate(&root_key);
+        let preimage = PaymentPreimage([0x11u8; 32]);
+        let payment_hash = PaymentHash::from(preimage);
+
+        let mint = |caveats: &[&str]| {
+            let mut mac =
+                Macaroon::create(Some("L402".into()), &key, payment_hash.0.into()).unwrap();
+            for c in caveats {
+                mac.add_first_party_caveat(ByteString::from(*c));
+            }
+            mac
+        };
+        let required = || vec!["Scope = a".to_string(), "Tier = premium".to_string()];
+
+        // Duplicate pads the count without carrying "Tier = premium".
+        assert!(
+            super::verify_l402(
+                &mint(&["Scope = a", "Scope = a"]),
+                required(),
+                root_key.clone(),
+                preimage
+            )
+            .is_err(),
+            "duplicate caveat must not satisfy a different required caveat"
+        );
+
+        // The honest macaroon still verifies.
+        assert!(super::verify_l402(
+            &mint(&["Scope = a", "Tier = premium"]),
+            required(),
+            root_key.clone(),
+            preimage
+        )
+        .is_ok());
+
+        // This entry point exact-matches only the required set, so any added
+        // caveat is rejected; attenuation belongs on verify_l402_binding.
+        assert!(super::verify_l402(
+            &mint(&["Scope = a", "Tier = premium", "ExpiresAt = 123"]),
+            required(),
+            root_key,
+            preimage
+        )
+        .is_err());
     }
 }
 
