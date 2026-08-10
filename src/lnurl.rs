@@ -53,10 +53,15 @@ pub struct DecodedPR {
 
 impl LnAddressUrlResJson {
     pub async fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
-        let lnurl_options = ln_client_config.lnurl_config.clone().unwrap();
+        let lnurl_options = ln_client_config
+            .lnurl_config
+            .clone()
+            .ok_or("LN_CLIENT_TYPE is LNURL but lnurl_config is missing")?;
         let (username, domain) = utils::parse_ln_address(lnurl_options.address)?;
-    
-        let ln_address_url = format!("https://{}/.well-known/lnurlp/{}", domain, username);
+
+        // LUD-16: onion services are served over http; everything else https.
+        let scheme = if domain.ends_with(".onion") { "http" } else { "https" };
+        let ln_address_url = format!("{}://{}/.well-known/lnurlp/{}", scheme, domain, username);
         let ln_address_url_res_body = do_get_request(&ln_address_url).await?;
 
         let ln_address_url_res: LnAddressUrlResJson = serde_json::from_str(&ln_address_url_res_body)?;
