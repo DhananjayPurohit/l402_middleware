@@ -57,9 +57,9 @@ impl LnAddressUrlResJson {
         let (username, domain) = utils::parse_ln_address(lnurl_options.address)?;
     
         let ln_address_url = format!("https://{}/.well-known/lnurlp/{}", domain, username);
-        let ln_address_url_res_body = do_get_request(&ln_address_url).await;
-    
-        let ln_address_url_res: LnAddressUrlResJson = serde_json::from_str(&ln_address_url_res_body.unwrap())?;
+        let ln_address_url_res_body = do_get_request(&ln_address_url).await?;
+
+        let ln_address_url_res: LnAddressUrlResJson = serde_json::from_str(&ln_address_url_res_body)?;
         Ok(Arc::new(Mutex::new(ln_address_url_res)))
     }
 }
@@ -82,7 +82,12 @@ impl lnclient::LNClient for LnAddressUrlResJson {
                 serde_json::from_str(&callback_url_res_body)?;
 
             let invoice = callback_url_res_json.pr;
-            let decoded_invoice = Bolt11Invoice::from_signed(invoice.parse::<SignedRawBolt11Invoice>().unwrap()).unwrap();
+            // `pr` is whatever the remote provider returned — never unwrap it.
+            let signed = invoice
+                .parse::<SignedRawBolt11Invoice>()
+                .map_err(|e| format!("LNURL callback returned an unparsable invoice: {:?}", e))?;
+            let decoded_invoice = Bolt11Invoice::from_signed(signed)
+                .map_err(|e| format!("LNURL callback invoice failed validation: {:?}", e))?;
             let payment_hash = decoded_invoice.payment_hash();
             let payment_addr = decoded_invoice.payment_secret();
 

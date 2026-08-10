@@ -45,7 +45,13 @@ impl lnclient::LNClient for NWCWrapper {
                 Ok(res) => {
                     println!("response {:?}", res);
 
-                    let decoded_invoice = Bolt11Invoice::from_signed(res.invoice.parse::<SignedRawBolt11Invoice>().unwrap()).unwrap();
+                    // res.invoice comes from the remote wallet — never unwrap it.
+                    let signed = res
+                        .invoice
+                        .parse::<SignedRawBolt11Invoice>()
+                        .map_err(|e| format!("NWC returned an unparsable invoice: {:?}", e))?;
+                    let decoded_invoice = Bolt11Invoice::from_signed(signed)
+                        .map_err(|e| format!("NWC invoice failed validation: {:?}", e))?;
                     let payment_addr = decoded_invoice.payment_secret();
                     // payment_hash is optional in the NIP-47 response.
                     let payment_hash = res
