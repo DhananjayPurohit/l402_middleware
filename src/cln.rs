@@ -25,7 +25,10 @@ impl CLNWrapper {
     pub async fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
-        let cln_options = ln_client_config.cln_config.clone().unwrap();
+        let cln_options = ln_client_config
+            .cln_config
+            .clone()
+            .ok_or("LN_CLIENT_TYPE is CLN but cln_config is missing")?;
 
         println!("CLN client {}", cln_options.lightning_dir);
 

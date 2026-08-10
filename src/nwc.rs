@@ -19,7 +19,10 @@ pub struct NWCWrapper {
 
 impl NWCWrapper {
     pub async fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
-        let nwc_options = ln_client_config.nwc_config.clone().unwrap();
+        let nwc_options = ln_client_config
+            .nwc_config
+            .clone()
+            .ok_or("LN_CLIENT_TYPE is NWC but nwc_config is missing")?;
         let uri = NostrWalletConnectURI::parse(&nwc_options.uri)?;
         let nwc = NWC::new(uri);
         Ok(Arc::new(Mutex::new(NWCWrapper { client: Arc::new(Mutex::new(nwc)) })))

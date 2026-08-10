@@ -190,7 +190,10 @@ impl Bolt12Wrapper {
     pub async fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
-        let bolt12_options = ln_client_config.bolt12_config.clone().unwrap();
+        let bolt12_options = ln_client_config
+            .bolt12_config
+            .clone()
+            .ok_or("LN_CLIENT_TYPE is BOLT12 but bolt12_config is missing")?;
 
         println!("BOLT12 client {} with offer {}", bolt12_options.lightning_dir, bolt12_options.offer);
 

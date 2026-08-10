@@ -175,7 +175,10 @@ impl LNDWrapper {
     pub async fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
-        let lnd_options = ln_client_config.lnd_config.clone().unwrap();
+        let lnd_options = ln_client_config
+            .lnd_config
+            .clone()
+            .ok_or("LN_CLIENT_TYPE is LND but lnd_config is missing")?;
         
         // Check if LNC pairing phrase is provided
         let connection = if let Some(pairing_phrase) = &lnd_options.lnc_pairing_phrase {
