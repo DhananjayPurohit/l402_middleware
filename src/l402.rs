@@ -4,6 +4,7 @@ use macaroon::{Macaroon, Verifier, MacaroonKey, Caveat};
 use rocket::{request, Request};
 use hex;
 
+#[cfg(feature = "rocket")]
 use crate::l402;
 use crate::caveats::RequestBinding;
 
