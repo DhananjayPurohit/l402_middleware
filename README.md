@@ -101,8 +101,10 @@ l402_middleware = { version = "2.3.3", features = ["no-accept-authenticate-requi
 The Rocket integration (Fairing, request guards, demo server) is behind the `rocket` feature, which is on by default. Library consumers that only call the handler functions (e.g. ngx_l402) can disable default features to drop rocket from their dependency tree:
 ```toml
 [dependencies]
-l402_middleware = { version = "2.3.3", default-features = false }
+l402_middleware = { version = "2.4.0", default-features = false }
 ```
+
+> **Note:** the `rocket` feature gate is not in a published release yet — 2.3.3 on crates.io predates it, so on 2.3.3 `default-features = false` is a no-op and rocket stays in the tree. This applies from the next published version.
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
 
