@@ -23,7 +23,7 @@ hex = "0.4.3"
 lightning = "0.2.2"
 lightning-invoice = "0.34.0"
 macaroon = "0.3.0"
-nwc = "0.44.0"
+nwc = "0.45"
 prost = "0.14"
 reqwest = { version = "0.12.7", features = ["json"] }
 rocket = { version = "0.5.0-rc.3", features = ["json"] }
