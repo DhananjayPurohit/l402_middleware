@@ -26,4 +26,8 @@ jobs:
 
       - name: Run cargo audit
         # Audit the dependency tree against the RustSec advisory database.
-        run: cargo audit
+        # RUSTSEC-2026-0258 (h2 unbounded empty DATA frames) is ignored: the
+        # only remaining affected copy is h2 0.3.27, pulled in by rocket 0.5
+        # via hyper 0.14, and the 0.3 line has no patched release. Drop this
+        # ignore once rocket moves to hyper 1.x.
+        run: cargo audit --ignore RUSTSEC-2026-0258
