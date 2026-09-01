@@ -4,6 +4,7 @@ use nwc::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::lnclient;
@@ -26,7 +27,13 @@ impl NWCWrapper {
             .clone()
             .ok_or("LN_CLIENT_TYPE is NWC but nwc_config is missing")?;
         let uri = NostrWalletConnectUri::parse(&nwc_options.uri)?;
-        let nwc = NostrWalletConnect::new(uri);
+        // nwc 0.45 defaults to a 10s request timeout; keep the 60s the 0.44
+        // options used so slow wallets or relays don't start failing invoices.
+        // Note: the first request's cipher-negotiation fetch is not covered by
+        // this timeout (upstream nwc limitation).
+        let nwc = NostrWalletConnect::builder(uri)
+            .timeout(Duration::from_secs(60))
+            .build();
         Ok(Arc::new(Mutex::new(NWCWrapper {
             client: Arc::new(Mutex::new(nwc)),
         })))
