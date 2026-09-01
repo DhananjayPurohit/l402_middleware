@@ -24,10 +24,30 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
+      - name: Guard against unpatched h2 versions masked by the ignore
+        # The --ignore below is advisory-wide: it would also hide a future
+        # regression that pulls h2 0.4.x < 0.4.16 back into the tree. Fail if
+        # any h2 outside the unpatchable 0.3 line is below the fixed version.
+        run: |
+          set -euo pipefail
+          awk '/^name = "h2"$/{getline; gsub(/"/, ""); sub(/^version = /, ""); print}' Cargo.lock |
+          while read -r v; do
+            case "$v" in
+              0.3.*) ;; # no patched 0.3 release exists; covered by the ignore
+              *) if [ "$(printf '0.4.16\n%s\n' "$v" | sort -V | head -n1)" != "0.4.16" ]; then
+                   echo "h2 $v is below the RUSTSEC-2026-0258 fix and would be masked by --ignore"
+                   exit 1
+                 fi ;;
+            esac
+          done
+
       - name: Run cargo audit
         # Audit the dependency tree against the RustSec advisory database.
         # RUSTSEC-2026-0258 (h2 unbounded empty DATA frames) is ignored: the
         # only remaining affected copy is h2 0.3.27, pulled in by rocket 0.5
-        # via hyper 0.14, and the 0.3 line has no patched release. Drop this
-        # ignore once rocket moves to hyper 1.x.
+        # via hyper 0.14, and the 0.3 line has no patched release. Consumers
+        # who keep the default rocket feature and run a rocket server do
+        # expose the vulnerable receive path; the advisory is a low-severity
+        # DoS and cannot be patched until rocket moves to hyper 1.x, so the
+        # ignore stands. Drop this ignore once rocket moves to hyper 1.x.
         run: cargo audit --ignore RUSTSEC-2026-0258
