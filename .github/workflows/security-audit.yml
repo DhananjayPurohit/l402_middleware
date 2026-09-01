@@ -31,10 +31,10 @@ jobs:
         run: |
           set -euo pipefail
           awk '/^name = "h2"$/{
-            if (getline <= 0 || $0 !~ /^version = "/) {
+            if ((getline line) <= 0 || line !~ /^version = "/) {
               print "unparseable h2 entry in Cargo.lock" > "/dev/stderr"; exit 1
             }
-            gsub(/"/, ""); sub(/^version = /, ""); print
+            gsub(/"/, "", line); sub(/^version = /, "", line); print line
           }' Cargo.lock |
           while read -r v; do
             case "$v" in
