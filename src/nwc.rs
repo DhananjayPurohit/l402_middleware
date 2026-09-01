@@ -59,7 +59,8 @@ impl lnclient::LNClient for NWCWrapper {
             };
             let response = match client.make_invoice(params).await {
                 Ok(res) => {
-                    println!("response {:?}", res);
+                    // Log only the payment hash: the full response can carry the preimage.
+                    println!("make_invoice response payment_hash: {:?}", res.payment_hash);
 
                     // res.invoice comes from the remote wallet — never unwrap it.
                     let signed = res
