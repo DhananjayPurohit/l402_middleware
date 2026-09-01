@@ -26,7 +26,8 @@ macaroon = "0.3.0"
 nwc = "0.45"
 prost = "0.14"
 reqwest = { version = "0.12.7", features = ["json"] }
-rocket = { version = "0.5.0-rc.3", features = ["json"] }
+rocket = { version = "0.5.0-rc.3", features = ["json"], optional = true }
+
 serde = "1.0.210"
 serde_json = "1.0"
 sha2 = "0.10"
@@ -55,4 +56,14 @@ k256 = "0.13"
 tonic-prost = "0.14"
 
 [features]
+default = ["rocket"]
 no-accept-authenticate-required = []
+# Rocket integration (Fairing, request guards, demo server). Library consumers
+# that only call the handler functions (e.g. ngx_l402) can build with
+# default-features = false and drop rocket/hyper 0.14/h2 0.3 from their tree.
+rocket = ["dep:rocket"]
+
+[[bin]]
+name = "l402_middleware"
+path = "src/main.rs"
+required-features = ["rocket"]

@@ -10,5 +10,6 @@ pub mod cln;
 pub mod bolt12;
 pub mod eclair;
 pub mod macaroon_util;
+#[cfg(feature = "rocket")]
 pub mod middleware;
 pub mod utils;

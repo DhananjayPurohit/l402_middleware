@@ -98,6 +98,12 @@ By using the no-accept-authenticate-required feature, the check for the Accept-A
 l402_middleware = { version = "2.3.3", features = ["no-accept-authenticate-required"] }
 ```
 
+The Rocket integration (Fairing, request guards, demo server) is behind the `rocket` feature, which is on by default. Library consumers that only call the handler functions (e.g. ngx_l402) can disable default features to drop rocket from their dependency tree:
+```toml
+[dependencies]
+l402_middleware = { version = "2.3.3", default-features = false }
+```
+
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
 
 ## Example

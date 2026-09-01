@@ -1,15 +1,14 @@
-use reqwest::{Client, Error};
-use rocket::serde::json::serde_json;
 use crate::lndrpc::lnrpc;
-use lightning_invoice::{Bolt11Invoice, SignedRawBolt11Invoice};
-use std::sync::Arc;
 use bitcoin::hashes::Hash;
-use tokio::sync::Mutex;
+use lightning_invoice::{Bolt11Invoice, SignedRawBolt11Invoice};
+use reqwest::{Client, Error};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-use crate::utils;
 use crate::lnclient;
+use crate::utils;
 
 #[derive(Debug, Clone)]
 pub struct LNURLOptions {
@@ -73,12 +72,17 @@ impl lnclient::LNClient for LnAddressUrlResJson {
     fn add_invoice(
         &self,
         ln_invoice: lnrpc::Invoice,
-    ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn std::error::Error + Send + Sync>>> + Send>> {
-        let callback_url = format!(
-            "{}?amount={}",
-            self.callback,
-            ln_invoice.value_msat
-        );
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        lnrpc::AddInvoiceResponse,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
+                > + Send,
+        >,
+    > {
+        let callback_url = format!("{}?amount={}", self.callback, ln_invoice.value_msat);
 
         Box::pin(async move {
             let callback_url_res_body = do_get_request(&callback_url).await?;
