@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           awk '{ sub(/\r$/, "") }
-          /^name = "h2"$/{
+          $1 == "name" && $2 == "=" && $3 == "\"h2\"" {
             n++
             if ((getline line) <= 0) {
               print "unparseable h2 entry in Cargo.lock" > "/dev/stderr"; exit 1
@@ -50,7 +50,7 @@ jobs:
               print "no h2 entries in Cargo.lock; the guard checked nothing" > "/dev/stderr"; exit 1
             }
           }' Cargo.lock |
-          while read -r v; do
+          while IFS= read -r v; do
             case "$v" in
               *[!0-9.]*)
                 echo "unexpected h2 version string '$v'"; exit 1 ;;
