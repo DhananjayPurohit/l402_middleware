@@ -30,10 +30,16 @@ jobs:
         # any h2 outside the unpatchable 0.3 line is below the fixed version.
         run: |
           set -euo pipefail
-          awk '/^name = "h2"$/{getline; gsub(/"/, ""); sub(/^version = /, ""); print}' Cargo.lock |
+          awk '/^name = "h2"$/{
+            if (getline <= 0 || $0 !~ /^version = "/) {
+              print "unparseable h2 entry in Cargo.lock" > "/dev/stderr"; exit 1
+            }
+            gsub(/"/, ""); sub(/^version = /, ""); print
+          }' Cargo.lock |
           while read -r v; do
             case "$v" in
-              0.3.*) ;; # no patched 0.3 release exists; covered by the ignore
+              0.3.*) ;; # no patched 0.3 release exists; covered by the ignore.
+                        # If one ever ships, bump via cargo update -p h2@0.3.27.
               *) if [ "$(printf '0.4.16\n%s\n' "$v" | sort -V | head -n1)" != "0.4.16" ]; then
                    echo "h2 $v is below the RUSTSEC-2026-0258 fix and would be masked by --ignore"
                    exit 1
