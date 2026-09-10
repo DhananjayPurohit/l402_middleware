@@ -24,6 +24,52 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
+      - name: Guard against unpatched h2 versions masked by the ignore
+        # The --ignore below is advisory-wide: it would also hide a future
+        # regression that pulls h2 0.4.x < 0.4.16 back into the tree. Fail if
+        # any h2 outside the unpatchable 0.3 line is below the fixed version,
+        # if no h2 entry is found at all (h2 is expected via reqwest/tonic,
+        # so zero matches means the guard itself broke), or if a version
+        # string is not a plain dotted-numeric release.
+        run: |
+          set -euo pipefail
+          awk '{ sub(/\r$/, "") }
+          $1 == "name" && $2 == "=" && $3 == "\"h2\"" {
+            n++
+            if ((getline line) <= 0) {
+              print "unparseable h2 entry in Cargo.lock" > "/dev/stderr"; exit 1
+            }
+            sub(/\r$/, "", line)
+            if (line !~ /^version = "/) {
+              print "unparseable h2 entry in Cargo.lock" > "/dev/stderr"; exit 1
+            }
+            gsub(/"/, "", line); sub(/^version = /, "", line); print line
+          }
+          END {
+            if (n == 0) {
+              print "no h2 entries in Cargo.lock; the guard checked nothing" > "/dev/stderr"; exit 1
+            }
+          }' Cargo.lock |
+          while IFS= read -r v; do
+            case "$v" in
+              *[!0-9.]*)
+                echo "unexpected h2 version string '$v'"; exit 1 ;;
+              0.3.*) ;; # no patched 0.3 release exists; covered by the ignore.
+                        # If one ever ships, bump via cargo update -p h2@0.3.27.
+              *) if [ "$(printf '0.4.16\n%s\n' "$v" | sort -V | head -n1)" != "0.4.16" ]; then
+                   echo "h2 $v is below the RUSTSEC-2026-0258 fix and would be masked by --ignore"
+                   exit 1
+                 fi ;;
+            esac
+          done
+
       - name: Run cargo audit
         # Audit the dependency tree against the RustSec advisory database.
-        run: cargo audit
+        # RUSTSEC-2026-0258 (h2 unbounded empty DATA frames) is ignored: the
+        # only remaining affected copy is h2 0.3.27, pulled in by rocket 0.5
+        # via hyper 0.14, and the 0.3 line has no patched release. Consumers
+        # who keep the default rocket feature and run a rocket server do
+        # expose the vulnerable receive path; the advisory is a low-severity
+        # DoS and cannot be patched until rocket moves to hyper 1.x, so the
+        # ignore stands. Drop this ignore once rocket moves to hyper 1.x.
+        run: cargo audit --ignore RUSTSEC-2026-0258

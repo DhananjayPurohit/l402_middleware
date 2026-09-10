@@ -1,8 +1,10 @@
 use lightning::types::payment::{PaymentHash, PaymentPreimage};
 use macaroon::{Macaroon, Verifier, MacaroonKey, Caveat};
+#[cfg(feature = "rocket")]
 use rocket::{request, Request};
 use hex;
 
+#[cfg(feature = "rocket")]
 use crate::l402;
 use crate::caveats::RequestBinding;
 
@@ -37,6 +39,7 @@ pub struct L402Info {
     pub auth_header: Option<String>,
 }
 
+#[cfg(feature = "rocket")]
 #[rocket::async_trait]
 impl<'r> request::FromRequest<'r> for L402Info {
     type Error = &'static str;

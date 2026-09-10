@@ -381,3 +381,28 @@ jobs:
           LN_CLIENT_TYPE: LND
           LNC_PAIRING_PHRASE: ${{ env.LNC_PAIRING_PHRASE }}
           LNC_MAILBOX_SERVER: mailbox.terminal.lightning.today:443
+
+  check-no-rocket:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Check library without rocket feature (ngx_l402 consumption path)
+        run: cargo check --no-default-features --all-targets
+
+      - name: Check library without rocket, with no-accept-authenticate-required
+        run: cargo check --no-default-features --all-targets --features "no-accept-authenticate-required"
+
+      - name: Assert rocket stays out of the no-default tree
+        # cargo tree -i fails when the package is absent; ! flips that into a pass.
+        run: "! cargo tree --no-default-features -i rocket"

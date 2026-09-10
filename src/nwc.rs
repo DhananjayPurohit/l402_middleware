@@ -1,10 +1,11 @@
-use nwc::prelude::*;
-use std::sync::Arc;
 use crate::lndrpc::lnrpc;
-use tokio::sync::Mutex;
+use lightning_invoice::{Bolt11Invoice, SignedRawBolt11Invoice};
+use nwc::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
-use lightning_invoice::{Bolt11Invoice, SignedRawBolt11Invoice};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
 
 use crate::lnclient;
 
@@ -14,18 +15,28 @@ pub struct NWCOptions {
 }
 
 pub struct NWCWrapper {
-    pub client: Arc<Mutex<NWC>>,
+    pub client: Arc<Mutex<NostrWalletConnect>>,
 }
 
 impl NWCWrapper {
-    pub async fn new_client(ln_client_config: &lnclient::LNClientConfig) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn new_client(
+        ln_client_config: &lnclient::LNClientConfig,
+    ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn std::error::Error + Send + Sync>> {
         let nwc_options = ln_client_config
             .nwc_config
             .clone()
             .ok_or("LN_CLIENT_TYPE is NWC but nwc_config is missing")?;
-        let uri = NostrWalletConnectURI::parse(&nwc_options.uri)?;
-        let nwc = NWC::new(uri);
-        Ok(Arc::new(Mutex::new(NWCWrapper { client: Arc::new(Mutex::new(nwc)) })))
+        let uri = NostrWalletConnectUri::parse(&nwc_options.uri)?;
+        // nwc 0.45 defaults to a 10s request timeout; keep the 60s the 0.44
+        // options used so slow wallets or relays don't start failing invoices.
+        // Note: the first request's cipher-negotiation fetch is not covered by
+        // this timeout (upstream nwc limitation).
+        let nwc = NostrWalletConnect::builder(uri)
+            .timeout(Duration::from_secs(60))
+            .build();
+        Ok(Arc::new(Mutex::new(NWCWrapper {
+            client: Arc::new(Mutex::new(nwc)),
+        })))
     }
 }
 
@@ -33,7 +44,16 @@ impl lnclient::LNClient for NWCWrapper {
     fn add_invoice(
         &self,
         invoice: lnrpc::Invoice,
-    ) -> Pin<Box<dyn Future<Output = Result<lnrpc::AddInvoiceResponse, Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        lnrpc::AddInvoiceResponse,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
+                > + Send,
+        >,
+    > {
         let client = Arc::clone(&self.client);
         Box::pin(async move {
             let client = client.lock().await;
@@ -46,7 +66,8 @@ impl lnclient::LNClient for NWCWrapper {
             };
             let response = match client.make_invoice(params).await {
                 Ok(res) => {
-                    println!("response {:?}", res);
+                    // Log only the payment hash: the full response can carry the preimage.
+                    println!("make_invoice response payment_hash: {:?}", res.payment_hash);
 
                     // res.invoice comes from the remote wallet — never unwrap it.
                     let signed = res
@@ -83,7 +104,12 @@ impl lnclient::LNClient for NWCWrapper {
     fn lookup_invoice(
         &self,
         payment_hash: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>>
+                + Send,
+        >,
+    > {
         let client = Arc::clone(&self.client);
         Box::pin(async move {
             let client = client.lock().await;
@@ -105,10 +131,11 @@ impl lnclient::LNClient for NWCWrapper {
             }
 
             match res.preimage.as_deref().filter(|p| !p.is_empty()) {
-                Some(preimage) => Ok(Some(
-                    hex::decode(preimage)
-                        .map_err(|e| format!("invalid preimage from NWC: {}", e))?,
-                )),
+                Some(preimage) => {
+                    Ok(Some(hex::decode(preimage).map_err(|e| {
+                        format!("invalid preimage from NWC: {}", e)
+                    })?))
+                }
                 None => Err("NWC invoice settled but preimage missing".into()),
             }
         })
