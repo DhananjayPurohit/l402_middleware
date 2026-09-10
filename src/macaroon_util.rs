@@ -19,7 +19,9 @@ pub fn get_macaroon_as_string(
         mac.add_first_party_caveat(ByteString::from(caveat.as_str()));
     }
 
-    let macaroon_string = mac.serialize(Format::V1).unwrap();
+    // V1 length-prefixes each packet with 4 hex digits, so a caveat over 65535
+    // bytes fails to serialize.
+    let macaroon_string = mac.serialize(Format::V1)?;
 
     Ok(macaroon_string)
 }

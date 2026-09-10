@@ -175,7 +175,10 @@ impl LNDWrapper {
     pub async fn new_client(
         ln_client_config: &lnclient::LNClientConfig,
     ) -> Result<Arc<Mutex<dyn lnclient::LNClient>>, Box<dyn Error + Send + Sync>> {
-        let lnd_options = ln_client_config.lnd_config.clone().unwrap();
+        let lnd_options = ln_client_config
+            .lnd_config
+            .clone()
+            .ok_or("LN_CLIENT_TYPE is LND but lnd_config is missing")?;
         
         // Check if LNC pairing phrase is provided
         let connection = if let Some(pairing_phrase) = &lnd_options.lnc_pairing_phrase {
@@ -361,8 +364,8 @@ impl LNDWrapper {
             && trimmed.chars().all(|c| c.is_ascii_hexdigit());
 
         let pairing_data = if is_hex {
+            // Never log `trimmed` — it is the raw LNC pairing entropy.
             eprintln!("Detected entropy hex format, parsing directly...");
-            eprintln!("Entropy hex: {}", trimmed);
             // It's a hex string - use entropy directly
             lnc::parse_pairing_phrase_from_entropy(trimmed)?
         } else {
