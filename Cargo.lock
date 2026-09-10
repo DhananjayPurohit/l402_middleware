@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "l402_middleware"
-version = "2.3.3"
+version = "2.3.4"
 dependencies = [
  "base64 0.21.7",
  "bitcoin 0.32.100",
