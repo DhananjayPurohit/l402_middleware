@@ -89,13 +89,13 @@ it.
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402_middleware = "2.3.3"
+l402_middleware = "2.3.4"
 ```
 
 By using the no-accept-authenticate-required feature, the check for the Accept-Authenticate header can be bypassed, allowing L402 to be treated as the default authentication option.
 ```toml
 [dependencies]
-l402_middleware = { version = "2.3.3", features = ["no-accept-authenticate-required"] }
+l402_middleware = { version = "2.3.4", features = ["no-accept-authenticate-required"] }
 ```
 
 The Rocket integration (Fairing, request guards, demo server) is behind the `rocket` feature, which is on by default. Library consumers that only call the handler functions (e.g. ngx_l402) can disable default features to drop rocket from their dependency tree:
@@ -103,8 +103,6 @@ The Rocket integration (Fairing, request guards, demo server) is behind the `roc
 [dependencies]
 l402_middleware = { version = "2.4.0", default-features = false }
 ```
-
-> **Note:** the `rocket` feature gate is not in a published release yet — 2.3.3 on crates.io predates it, so on 2.3.3 `default-features = false` is a no-op and rocket stays in the tree. This applies from the next published version.
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
 
