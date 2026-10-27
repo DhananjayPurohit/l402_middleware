@@ -37,6 +37,7 @@ understands four:
 | `Realm = name` | Valid for every path the server maps to that realm |
 | `RequestMethod = GET` | Valid for one HTTP method |
 | `ExpiresAt = <unix seconds>` | Valid until an absolute time |
+| `<Key> = <value>` | Your own binding, e.g. `McpTool = search` (see below) |
 
 `RequestPath` and `Realm` are alternatives — a token carries one or the other,
 never both. Build them with `caveats::RequestBinding` rather than by hand, so
@@ -53,6 +54,10 @@ let binding = RequestBinding::realm("library", "GET");
 
 // Either can expire.
 let binding = binding.with_expiry(Some(expires_at_unix_seconds));
+
+// Either can carry extra bindings: a token for one tool behind a shared
+// endpoint can't call another. `None` for a reserved or malformed key.
+let binding = binding.with_bound("McpTool", "search").expect("valid key");
 
 let caveats = binding.to_caveats();   // mint these into the macaroon
 ```
@@ -82,6 +87,12 @@ That last part is the security-critical one: a verifier that lets an unknown
 token minted for a different route. `RequestBinding::verifier` is the single
 place that guard lives, and the bypass tests at the bottom of `caveats.rs` cover
 it.
+
+**Bound caveats are checked by `verify_l402_binding`.** A caveat added with
+`with_bound` must be present and carry exactly the bound value; a token without
+it, or bound to another value, is rejected. That check runs in
+`RequestBinding::check_bound`, outside the `Verifier`, so code that builds its
+own verifier from `binding.verifier()` must call `check_bound` too.
 
 
 ## Installation
