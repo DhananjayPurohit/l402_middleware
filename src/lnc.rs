@@ -11,10 +11,6 @@ use chacha20poly1305::{
 use hkdf::Hkdf;
 use sha2::{Sha256, Sha512, Digest};
 use secp256k1::{Secp256k1, SecretKey, PublicKey, Keypair};
-use k256::{
-    elliptic_curve::sec1::ToEncodedPoint,
-    ProjectivePoint, Scalar,
-};
 use hex;
 use rand::Rng;
 use serde_json;
@@ -1971,15 +1967,12 @@ impl NoiseHandshakeState {
     }
     
     fn ecdh(&self, pubkey: &PublicKey, keypair: &Keypair) -> Result<[u8; 32], Box<dyn Error + Send + Sync>> {
-        // Perform ECDH: shared_point = pubkey * keypair.secret_key
-        let shared_point = pubkey.mul_tweak(&self.secp, &keypair.secret_key().into())
-            .map_err(|e| format!("ECDH failed: {}", e))?;
-        
-        // Hash the shared point (compressed representation)
-        let shared_bytes = shared_point.serialize();
-        let shared_secret = Sha256::digest(&shared_bytes);
-        
-        Ok(shared_secret.into())
+        // Perform ECDH: SHA256 of the compressed point pubkey * keypair.secret_key
+        // libsecp256k1's ECDH module computes exactly this, in constant time in the
+        // secret key; PublicKey::mul_tweak is variable-time.
+        let shared_secret = secp256k1::ecdh::SharedSecret::new(pubkey, &keypair.secret_key());
+
+        Ok(shared_secret.secret_bytes())
     }
 }
 
@@ -1987,50 +1980,35 @@ impl NoiseHandshakeState {
 /// This implements: masked_ephemeral = ephemeral + (N * passphrase_scalar)
 /// Where N is the SPAKE2 generator point and pw is the passphrase entropy
 fn spake2_mask(e: &PublicKey, passphrase_entropy: &[u8]) -> Result<PublicKey, Box<dyn Error + Send + Sync>> {
-    use k256::elliptic_curve::sec1::FromEncodedPoint;
-    use k256::elliptic_curve::ff::PrimeField;
-    
+    use secp256k1::ecdh::shared_secret_point;
+
     // Parse SPAKE2 generator point N from hex
     let n_bytes = hex::decode(SPAKE2_N_HEX)
         .map_err(|e| format!("Failed to decode SPAKE2 N: {}", e))?;
-    let n_k256_point = k256::EncodedPoint::from_bytes(&n_bytes)
+    let n_point = PublicKey::from_slice(&n_bytes)
         .map_err(|e| format!("Failed to parse SPAKE2 N: {}", e))?;
-    let n_projective = ProjectivePoint::from_encoded_point(&n_k256_point);
-    let n_projective = Option::<ProjectivePoint>::from(n_projective)
-        .ok_or("Failed to convert N to projective point")?;
-    
-    // Convert ephemeral key to projective point
-    let e_bytes = e.serialize();
-    let e_k256_point = k256::EncodedPoint::from_bytes(&e_bytes)
-        .map_err(|e| format!("Invalid ephemeral key: {}", e))?;
-    let e_projective = ProjectivePoint::from_encoded_point(&e_k256_point);
-    let e_projective = Option::<ProjectivePoint>::from(e_projective)
-        .ok_or("Failed to convert ephemeral to projective point")?;
-    
+
     // Convert passphrase entropy to scalar
     // CRITICAL: Go reference DOES NOT hash the entropy before converting to scalar.
     // It uses the stretched 32-byte entropy directly.
-    let mut pw_bytes = [0u8; 32];
-    if passphrase_entropy.len() == 32 {
-        pw_bytes.copy_from_slice(passphrase_entropy);
-    } else {
+    if passphrase_entropy.len() != 32 {
         return Err("Passphrase entropy must be 32 bytes (stretched)".into());
     }
-    
-    let pw_scalar = Scalar::from_repr(pw_bytes.into());
-    let pw_scalar = Option::<Scalar>::from(pw_scalar)
-        .ok_or("Invalid scalar representation")?;
-    
+    let pw_scalar = SecretKey::from_slice(passphrase_entropy)
+        .map_err(|_| "Invalid scalar representation")?;
+
     // Perform SPAKE2 masking: me = e + N*pw
-    let point_pw = n_projective * pw_scalar;
-    let masked_projective = e_projective + point_pw;
-    
-    // Convert back to secp256k1 PublicKey (compressed)
-    let masked_encoded = masked_projective.to_encoded_point(true);
-    let masked_bytes = masked_encoded.as_bytes();
-    let masked_pub = PublicKey::from_slice(masked_bytes)
+    // pw is secret, so N*pw uses libsecp256k1's ECDH multiply, which is
+    // constant-time in the scalar (PublicKey::mul_tweak is not). It returns
+    // the product's raw x || y, so re-encode it as an uncompressed point.
+    let mut point_pw_bytes = [0u8; 65];
+    point_pw_bytes[0] = 0x04;
+    point_pw_bytes[1..].copy_from_slice(&shared_secret_point(&n_point, &pw_scalar));
+    let point_pw = PublicKey::from_slice(&point_pw_bytes)
+        .map_err(|e| format!("Failed to compute N*pw: {}", e))?;
+    let masked_pub = e.combine(&point_pw)
         .map_err(|e| format!("Failed to create masked pubkey: {}", e))?;
-    
+
     Ok(masked_pub)
 }
 
@@ -2756,5 +2734,68 @@ impl tokio::io::AsyncWrite for MailboxConnection {
     ) -> std::task::Poll<std::io::Result<()>> {
         // For now, just return Ready - proper shutdown would close the GoBN connection
         std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // (ephemeral pubkey, stretched passphrase entropy, masked pubkey), computed
+    // with the previous k256-based spake2_mask so the switch to libsecp256k1
+    // cannot silently change what Act 1 puts on the wire.
+    const SPAKE2_MASK_VECTORS: [(&str, &str, &str); 2] = [
+        (
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "027d326ad1f29a51780507b91abe7424cc7ddc9b13387573c04ae7242c8a901da5",
+        ),
+        (
+            "03a16bbddc8a19c2e1bd1002de8b705c8824273993d0cd4d23196c5a34b00890b8",
+            "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
+            "03a73088eca0f6254438613f326f8dc50f1b2214a2e00f1c1172f90fdeef74583c",
+        ),
+    ];
+
+    #[test]
+    fn spake2_mask_matches_known_vectors() {
+        for (e_hex, pw_hex, masked_hex) in SPAKE2_MASK_VECTORS {
+            let e = PublicKey::from_slice(&hex::decode(e_hex).unwrap()).unwrap();
+            let masked = spake2_mask(&e, &hex::decode(pw_hex).unwrap()).unwrap();
+            assert_eq!(hex::encode(masked.serialize()), masked_hex);
+        }
+    }
+
+    #[test]
+    fn spake2_mask_rejects_zero_scalar() {
+        // N*0 would put the ephemeral key on the wire unmasked.
+        let e = PublicKey::from_slice(&hex::decode(SPAKE2_MASK_VECTORS[0].0).unwrap()).unwrap();
+        assert!(spake2_mask(&e, &[0u8; 32]).is_err());
+    }
+
+    // es and ee from BOLT #8 Appendix A: the Noise ECDH that LNC inherits from
+    // brontide is SHA256 of the compressed shared point.
+    #[test]
+    fn ecdh_matches_bolt8_vectors() {
+        let secp = Secp256k1::new();
+        let local_static = Keypair::from_seckey_slice(&secp, &[0x11; 32]).unwrap();
+        let state = NoiseHandshakeState::new(&local_static, vec![0u8; 32]).unwrap();
+        let vectors = [
+            (
+                [0x12u8; 32],
+                "028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7",
+                "1e2fb3c8fe8fb9f262f649f64d26ecf0f2c0a805a767cf02dc2d77a6ef1fdcc3",
+            ),
+            (
+                [0x22u8; 32],
+                "036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f7",
+                "c06363d6cc549bcb7913dbb9ac1c33fc1158680c89e972000ecd06b36c472e47",
+            ),
+        ];
+        for (secret, remote_hex, shared_hex) in vectors {
+            let keypair = Keypair::from_seckey_slice(&secp, &secret).unwrap();
+            let remote = PublicKey::from_slice(&hex::decode(remote_hex).unwrap()).unwrap();
+            assert_eq!(hex::encode(state.ecdh(&remote, &keypair).unwrap()), shared_hex);
+        }
     }
 }
