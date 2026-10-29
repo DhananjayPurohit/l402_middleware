@@ -2772,4 +2772,30 @@ mod tests {
         let e = PublicKey::from_slice(&hex::decode(SPAKE2_MASK_VECTORS[0].0).unwrap()).unwrap();
         assert!(spake2_mask(&e, &[0u8; 32]).is_err());
     }
+
+    // es and ee from BOLT #8 Appendix A: the Noise ECDH that LNC inherits from
+    // brontide is SHA256 of the compressed shared point.
+    #[test]
+    fn ecdh_matches_bolt8_vectors() {
+        let secp = Secp256k1::new();
+        let local_static = Keypair::from_seckey_slice(&secp, &[0x11; 32]).unwrap();
+        let state = NoiseHandshakeState::new(&local_static, vec![0u8; 32]).unwrap();
+        let vectors = [
+            (
+                [0x12u8; 32],
+                "028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7",
+                "1e2fb3c8fe8fb9f262f649f64d26ecf0f2c0a805a767cf02dc2d77a6ef1fdcc3",
+            ),
+            (
+                [0x22u8; 32],
+                "036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f7",
+                "c06363d6cc549bcb7913dbb9ac1c33fc1158680c89e972000ecd06b36c472e47",
+            ),
+        ];
+        for (secret, remote_hex, shared_hex) in vectors {
+            let keypair = Keypair::from_seckey_slice(&secp, &secret).unwrap();
+            let remote = PublicKey::from_slice(&hex::decode(remote_hex).unwrap()).unwrap();
+            assert_eq!(hex::encode(state.ecdh(&remote, &keypair).unwrap()), shared_hex);
+        }
+    }
 }
