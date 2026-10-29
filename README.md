@@ -89,19 +89,19 @@ it.
 Add the crate to your `Cargo.toml`:
 ```toml
 [dependencies]
-l402_middleware = "2.3.4"
+l402_middleware = "2.3.5"
 ```
 
 By using the no-accept-authenticate-required feature, the check for the Accept-Authenticate header can be bypassed, allowing L402 to be treated as the default authentication option.
 ```toml
 [dependencies]
-l402_middleware = { version = "2.3.4", features = ["no-accept-authenticate-required"] }
+l402_middleware = { version = "2.3.5", features = ["no-accept-authenticate-required"] }
 ```
 
 The Rocket integration (Fairing, request guards, demo server) is behind the `rocket` feature, which is on by default. Library consumers that only call the handler functions (e.g. ngx_l402) can disable default features to drop rocket from their dependency tree:
 ```toml
 [dependencies]
-l402_middleware = { version = "2.4.0", default-features = false }
+l402_middleware = { version = "2.3.5", default-features = false }
 ```
 
 Ensure that you create a `.env` file based on the provided `.env_example` and configure all the necessary environment variables.
