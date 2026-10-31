@@ -232,6 +232,7 @@ pub fn verify_l402_binding(
     root_key: Vec<u8>,
     preimage: PaymentPreimage,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    binding.check_bound(mac)?;
     let mut verifier = binding.verifier();
     verify_l402_with_verifier(mac, &mut verifier, root_key, preimage)
 }
